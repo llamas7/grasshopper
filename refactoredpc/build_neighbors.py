@@ -1,87 +1,20 @@
 from __future__ import annotations
-from .core import Neighborhood, NonAntipodalNeighborhood
-from .kernels import (
-    calculate_contributions,
-    calculate_prob_prefactor,
-    resolve_delta_kernel,
-)
-from .metrics import (
-    DistanceMetric,
-    resolve_distance_metric,
-    spherical_distances,
-    validate_distances,
-)
+
 import numpy as np
 import scipy as sci
 from tqdm import tqdm
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from .system import System
-
-def get_distances(grid_points: np.ndarray, spin: np.ndarray) -> np.ndarray:
-    return spherical_distances(grid_points, spin)
-
-def neighbor_chord_pruning(
-        search_points: np.ndarray,
-        grid_points: np.ndarray,
-        jump_distance: float,
-        silent: bool = True,
-):
-    """
-    Fast neighbor pruning using KD-tree ball queries with angular-to-chord conversion,
-    followed by angular filtering to approximate a delta-function kernel centered
-    at `jump_distance`.
-
-    Parameters:
-        search_points: points for which to find neighbors
-        grid_points: full grid of candidate points
-        jump_distance: angular distance target (radians)
-        angular_width: allowable deviation from jump_distance (± window)
-        silent: suppress tqdm progress bar
-
-    Returns:
-        List of index arrays corresponding to pruned neighbors per search point.
-    """
-    cos_target = np.cos(jump_distance)
-    cell_length = np.sqrt(4 * np.pi / grid_points.shape[0])
-    angular_width = 2 * cell_length  # Angular width for pruning
-    cos_min = np.cos(jump_distance + angular_width)
-    cos_max = np.cos(jump_distance - angular_width)
-
-    # Convert angular width to Euclidean (chord) radius for KD-tree query
-    chord_radius = np.sqrt(2 * (1 - np.cos(jump_distance + angular_width)))
-    grid_tree = sci.spatial.cKDTree(grid_points)
-
-    total_points = 0
-    total_filtered = 0
-    pruned_neighbors = []
-    for center in tqdm(search_points, disable=silent):
-        candidate_idxs = grid_tree.query_ball_point(center, r=chord_radius)
-        candidate_vecs = grid_points[candidate_idxs]
-
-        # Compute cos(angle) via dot product (points are on sphere)
-        dot_products = candidate_vecs @ center
-        mask = (dot_products >= cos_min) & (dot_products <= cos_max)
-
-        filtered_idxs = np.array(candidate_idxs)[mask]
-        pruned_neighbors.append(filtered_idxs)
-        total_points += len(candidate_idxs)
-        total_filtered += len(filtered_idxs)
-    print(
-        f"Total points to filter: {total_points}, "
-        f"Total pre-filtered: {total_filtered}"
-    )
-
-    return pruned_neighbors
+from .core import Neighborhood, NonAntipodalNeighborhood
+from .kernels import calculate_contributions, resolve_delta_kernel
+from .metrics import DistanceMetric, resolve_distance_metric, validate_distances
 
 
 def neighbor_pruning(
-        search_points: np.ndarray,
-        grid_points: np.ndarray,
-        jump_distance: float,
-        interaction_spread: float,
-        silent: bool = True,
+    search_points: np.ndarray,
+    grid_points: np.ndarray,
+    jump_distance: float,
+    interaction_spread: float,
+    silent: bool = True,
 ):
     """
     Returns a list of arrays, where each array contains the indices
@@ -131,7 +64,11 @@ def neighbor_pruning(
     buffer = 1.05
 
     for center in tqdm(search_points, disable=silent):
-        ref = np.array([1.0, 0.0, 0.0]) if abs(center[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        ref = (
+            np.array([1.0, 0.0, 0.0])
+            if abs(center[0]) < 0.9
+            else np.array([0.0, 1.0, 0.0])
+        )
         v = np.cross(center, ref)
         v_norm = np.linalg.norm(v)
         if v_norm == 0:
@@ -146,12 +83,14 @@ def neighbor_pruning(
         z /= np.linalg.norm(z)
 
         circle_points = (
-                ring_radius * (np.cos(theta) * v + np.sin(theta) * z)
-                + np.cos(jump_distance) * center
+            ring_radius * (np.cos(theta) * v + np.sin(theta) * z)
+            + np.cos(jump_distance) * center
         )
 
         raw_indices = grid_tree.query_ball_point(circle_points, search_radius * buffer)
-        nonempty = [np.asarray(idx, dtype=np.int64) for idx in raw_indices if len(idx) > 0]
+        nonempty = [
+            np.asarray(idx, dtype=np.int64) for idx in raw_indices if len(idx) > 0
+        ]
         flattened = (
             np.unique(np.concatenate(nonempty))
             if nonempty
@@ -163,12 +102,12 @@ def neighbor_pruning(
 
 
 def build_neighborhood(
-        grid_points: np.ndarray,
-        jump_distance: float,
-        antipodal: bool = True,
-        delta: str = "two",
-        silent: bool = True,
-        distance_metric: DistanceMetric = "spherical",
+    grid_points: np.ndarray,
+    jump_distance: float,
+    antipodal: bool = True,
+    delta: str = "two",
+    silent: bool = True,
+    distance_metric: DistanceMetric = "spherical",
 ):
     return (
         build_antipodal_neighborhood(
@@ -182,18 +121,18 @@ def build_neighborhood(
 
 
 def build_antipodal_neighborhood(
-        grid_points: np.ndarray,
-        jump_distance: float,
-        delta: str = "two",
-        silent: bool = True,
-        distance_metric: DistanceMetric = "spherical",
+    grid_points: np.ndarray,
+    jump_distance: float,
+    delta: str = "two",
+    silent: bool = True,
+    distance_metric: DistanceMetric = "spherical",
 ):
     discrete_function, interaction_spread, exact_scan = resolve_delta_kernel(delta)
 
     num_points = len(grid_points)
     if num_points % 2 != 0:
         raise ValueError("Number of points must be even for antipodal neighborhood.")
-    num_spins = num_points // 2  # Every antipodal pair is converted to a single spin
+    num_spins = num_points // 2
     cell_length = np.sqrt((4 * np.pi) / num_points)
     resolved_metric = resolve_distance_metric(distance_metric)
     jump_distance = float(abs(jump_distance))
@@ -247,11 +186,11 @@ def build_antipodal_neighborhood(
 
 
 def build_nonantipodal_neighborhood(
-        grid_points: np.ndarray,
-        jump_distance: float,
-        delta: str = "two",
-        silent: bool = True,
-        distance_metric: DistanceMetric = "spherical",
+    grid_points: np.ndarray,
+    jump_distance: float,
+    delta: str = "two",
+    silent: bool = True,
+    distance_metric: DistanceMetric = "spherical",
 ):
     discrete_function, interaction_spread, exact_scan = resolve_delta_kernel(delta)
 
@@ -289,4 +228,3 @@ def build_nonantipodal_neighborhood(
         )
 
     return neighborhood
-

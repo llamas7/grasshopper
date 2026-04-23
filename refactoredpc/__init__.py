@@ -1,5 +1,7 @@
 from .core import (
     AnnealData,
+    AnnealRecord,
+    AnnealSchedule,
     DeltaType,
     Engine,
     Neighborhood,
@@ -7,7 +9,6 @@ from .core import (
     NonAntipodalNeighborhood,
     NonAntipodalNeighborhoodCSR,
     OccupancyState,
-    Parameters,
     SystemState,
     SystemType,
 )
@@ -17,6 +18,8 @@ from .parallel_tempering import ParallelTemperingResult, parallel_tempering
 
 __all__ = [
     "AnnealData",
+    "AnnealRecord",
+    "AnnealSchedule",
     "DeltaType",
     "DistanceMetric",
     "Engine",
@@ -27,7 +30,6 @@ __all__ = [
     "NonAntipodalNeighborhoodCSR",
     "OccupancyState",
     "ParallelTemperingResult",
-    "Parameters",
     "System",
     "SystemState",
     "SystemType",

@@ -5,7 +5,6 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import xarray as xr
 from numpy.typing import NDArray
 
@@ -13,11 +12,11 @@ from .annealing import simulated_annealing, thermalize_system
 from .build_neighbors import build_neighborhood
 from .core import (
     AnnealData,
+    AnnealSchedule,
     DeltaType,
     NeighborhoodData,
     NonAntipodalNeighborhoodCSR,
     OccupancyState,
-    Parameters,
     SystemState,
     SystemType,
 )
@@ -50,23 +49,23 @@ class System:
 
     • the spherical grid (Nx3 Cartesian coordinates),
     • system type (INVERSE, INDEPENDENT, NON_ANTIPODAL),
-    • jump distance and δ-type (determines neighborhood connectivity),
+    • neighborhood parameters (jump distance and interaction kernel) once built,
     • computed neighborhood structure,
     • current and best spin configurations,
-    • per-step annealing data (temperature, energy history, acceptance statistics),
+    • optimization history (energy and acceptance records),
     • save/load routines for reproducibility.
 
     The lifecycle of a `System` object is:
 
     1. **Construction**
-       Provide a grid and jump distance. The constructor normalizes enums,
+       Provide a grid and system type. The constructor normalizes enums,
        validates grid shape, infers antipodal/non-antipodal rules, computes
-       the number of spins, and prepares an `AnnealData` container.
+       the number of spins, and prepares an `AnnealData` history container.
 
     2. **Neighborhood construction**
-       Call `compute_neighborhood()`. This builds the adjacency list used by
-       all Metropolis updates and also sets the probability prefactor needed
-       for computing Boltzmann factors.
+       Call `compute_neighborhood(jump_distance=..., delta=...)`. This builds
+       the adjacency list used by all Metropolis updates and also sets the
+       probability prefactor needed for computing Boltzmann factors.
 
     3. **Initialization**
        Choose one of:
@@ -85,29 +84,29 @@ class System:
        scale-invariance.
 
     5. **Simulated Annealing**
-       Calling `anneal()` executes the annealing schedule defined in
-       `Parameters`, updates spin states in place, and records best energies
-       and acceptance statistics.
+       Calling `anneal(schedule=...)` executes a call-time annealing schedule,
+       updates spin states in place, and records best energies and acceptance
+       statistics.
 
     6. **Saving and Loading**
-       `save(path)` writes the spin states and anneal statistics to NetCDF/CSV.
+       `save(path)` writes the spin states and anneal statistics to NetCDF.
        Note that **grid and neighborhood are not saved**; reconstructing a system
        after loading requires rebuilding the neighborhood manually.
-       `load(path)` restores spin arrays, energies, parameters, and anneal data
+       `load(path)` restores spin arrays, energies, and optimization records
        while validating consistency with the current grid.
 
     Attributes
     ----------
     grid : ndarray of shape (N, 3)
         Cartesian coordinates of lattice points on the sphere.
-    jump_distance : float
-        Maximum distance used to construct neighborhood lists.
+    jump_distance : float | None
+        Last distance used to construct the current neighborhood. Prefer
+        passing this to `compute_neighborhood()`.
     system_type : SystemType
         Determines antipodal constraints and spin dimensionality.
     delta : DeltaType
-        Delta discretization function used for neighborhood construction.
-    parameters : Parameters
-        Contains SA schedule parameters (initial temp, cooling, step count, etc.).
+        Last interaction kernel used for neighborhood construction. Prefer
+        passing this to `compute_neighborhood()`.
     num_spins : int | None
         For Euclidean systems, the number of occupied sites to initialize and
         preserve during fixed-density updates. If omitted, defaults to N/2.
@@ -119,7 +118,7 @@ class System:
         True unless system_type is NON_ANTIPODAL.
     initialized : bool
         Tracks whether spin configuration has been initialized.
-    neighborhood : list[NeighborhoodLike]
+    neighborhood : NeighborhoodData
         Precomputed adjacency list for every lattice site.
     prob_prefactor : float
         Multiplicative factor used in Boltzmann probability calculations.
@@ -136,25 +135,19 @@ class System:
     best_energy : float
         Energy of best_system.
     anneal_data : AnnealData
-        Temperature, energy history, and acceptance statistics for annealing.
-    parameters_set : bool
-        Tracks whether user provided custom Parameters.
-    up_spins, down_spins : list[int] or None
-        Only used for NON_ANTIPODAL systems.
-
+        Optimization history and acceptance statistics.
     Notes
     -----
-    • You must call `compute_neighborhood()` before initializing spins.
+    • You must call `compute_neighborhood(jump_distance=...)` before initializing spins.
     • You must initialize spins before calling `anneal()` or `thermalize()`.
     • Saving includes spin configurations and annealing metadata, but does NOT
       include the grid itself; the same grid must exist on the object before `load()`.
     """
 
     grid: NDArray[np.float64]
-    jump_distance: float
+    jump_distance: float | None = None
     system_type: SystemType | str = SystemType.INVERSE
-    delta: DeltaType = DeltaType.TWO
-    parameters: Parameters = field(init=True, default_factory=Parameters)
+    delta: DeltaType | str = DeltaType.TWO
     num_spins: int | None = None
 
     dimension: int = field(init=False, default=3)
@@ -168,37 +161,103 @@ class System:
     best_system: NDArray[np.bool_] | None = field(init=False, default=None)
     best_energy: float = field(init=False, default=0.0)
     anneal_data: AnnealData | None = field(init=False, default=None)
-    parameters_set: bool | None = field(init=False, default=False)
     occupancy: OccupancyState | None = field(init=False, default=None)
-    # Fixed-density systems only; mirrored from occupancy for compatibility.
-    up_spins: list[int] | None = field(init=False, default=None)
-    down_spins: list[int] | None = field(init=False, default=None)
+    _temperature: float = field(
+        init=False,
+        default=float(AnnealSchedule().starting_temp),
+        repr=False,
+    )
 
-    def __post_init__(self) -> None:
-        """Normalize enums and derive antipodal flag; validate lattice size."""
-        # Coerce strings to Enums (case-insensitive).
-        if isinstance(self.system_type, str):
+    @classmethod
+    def _coerce_system_type(cls, value: SystemType | str) -> SystemType:
+        if isinstance(value, SystemType):
+            return value
+        if isinstance(value, str):
             try:
-                self.system_type = SystemType(
-                    self.system_type.lower().replace("_", "-")
-                )
+                return SystemType(value.lower().replace("_", "-"))
             except ValueError as exc:
                 valid = ", ".join(system_type.value for system_type in SystemType)
                 raise ValueError(
-                    f"Unknown system_type {self.system_type!r}. Expected one of: {valid}."
+                    f"Unknown system_type {value!r}. Expected one of: {valid}."
                 ) from exc
+        raise TypeError("system_type must be a SystemType or string.")
 
-        if isinstance(self.delta, str):
-            try:
-                self.delta = DeltaType(self.delta.lower())
-            except ValueError as exc:
-                valid = ", ".join(delta.value for delta in DeltaType)
-                raise ValueError(
-                    f"Unknown delta {self.delta!r}. Expected one of: {valid}."
-                ) from exc
+    @classmethod
+    def _coerce_delta(cls, value: DeltaType | str) -> DeltaType:
+        if isinstance(value, DeltaType):
+            return value
+        if isinstance(value, str):
+            delta_key = value.lower().replace("-", "_")
+            for delta in DeltaType:
+                if delta_key == delta.value.lower().replace("-", "_"):
+                    return delta
+            valid = ", ".join(delta.value for delta in DeltaType)
+            raise ValueError(f"Unknown delta {value!r}. Expected one of: {valid}.")
+        raise TypeError("delta must be a DeltaType or string.")
+
+    @staticmethod
+    def _coerce_jump_distance(value: float | None) -> float:
+        if value is None:
+            raise ValueError(
+                "jump_distance is required. Pass it to compute_neighborhood("
+                "jump_distance=...)."
+            )
+        jump_distance = float(value)
+        if not np.isfinite(jump_distance):
+            raise ValueError(
+                f"jump_distance must be finite, got {value!r}."
+            )
+        return jump_distance
+
+    @classmethod
+    def _make_anneal_schedule(
+        cls,
+        schedule: AnnealSchedule | dict | None = None,
+        *,
+        starting_temp: float | None = None,
+        final_temp: float | None = None,
+        cooling_rate: float | None = None,
+        min_acceptance: float | None = None,
+        max_runtime_hours: float | None = None,
+        max_iterations: int | None = None,
+        steps: int | None = None,
+    ) -> AnnealSchedule:
+        if schedule is None:
+            data = asdict(AnnealSchedule())
+        elif isinstance(schedule, AnnealSchedule):
+            data = asdict(schedule)
+        elif isinstance(schedule, dict):
+            data = asdict(AnnealSchedule.from_mapping(schedule))
+        else:
+            raise TypeError("schedule must be an AnnealSchedule, mapping, or None.")
+
+        updates = {
+            "starting_temp": starting_temp,
+            "final_temp": final_temp,
+            "cooling_rate": cooling_rate,
+            "min_acceptance": min_acceptance,
+            "max_runtime_hours": max_runtime_hours,
+            "max_iterations": max_iterations,
+            "starting_steps": steps,
+        }
+        for key, value in updates.items():
+            if value is not None:
+                data[key] = value
+
+        return AnnealSchedule.from_mapping(data)
+
+    def __post_init__(self) -> None:
+        """Normalize enums and derive antipodal flag; validate lattice size."""
+        self.system_type = self._coerce_system_type(self.system_type)
+        self.delta = self._coerce_delta(self.delta)
+        if self.jump_distance is not None:
+            self.jump_distance = self._coerce_jump_distance(self.jump_distance)
 
         # Derive antipodal flag from system type
-        self.antipodal = self.system_type in (SystemType.INVERSE, SystemType.INDEPENDENT)
+        self.antipodal = self.system_type in (
+            SystemType.INVERSE,
+            SystemType.INDEPENDENT,
+        )
 
         # Basic grid validation and site count
         if not isinstance(self.grid, np.ndarray):
@@ -242,18 +301,49 @@ class System:
                     "Spherical systems derive num_spins from the grid size."
                 )
             if isinstance(requested_num_spins, bool) or not isinstance(
-                    requested_num_spins, (int, np.integer)
+                requested_num_spins, (int, np.integer)
             ):
                 raise TypeError("num_spins must be an integer.")
             self.num_spins = int(requested_num_spins)
         else:
             self.num_spins = n_sites // 2
 
-        if self.system_type == SystemType.EUCLIDEAN and not 0 < self.num_spins < n_sites:
+        if (
+            self.system_type == SystemType.EUCLIDEAN
+            and not 0 < self.num_spins < n_sites
+        ):
             raise ValueError(
                 f"Euclidean num_spins must be between 1 and N-1 "
                 f"for N={n_sites} grid sites, got {self.num_spins}."
             )
+
+        system_shapes = {
+            SystemType.INVERSE.value: self.num_spins,
+            SystemType.INDEPENDENT.value: (self.num_spins, 2),
+            SystemType.NON_ANTIPODAL.value: n_sites,
+            SystemType.EUCLIDEAN.value: n_sites,
+        }
+        self.system_shape = system_shapes.get(self.system_type.value)
+        self.anneal_data = AnnealData()
+
+    def compute_neighborhood(
+        self,
+        jump_distance: float | None = None,
+        *,
+        delta: DeltaType | str | None = None,
+        silent: bool = True,
+        distance_metric: DistanceMetric | None = None,
+    ) -> None:
+        """
+        Build and store the neighborhood; also compute probability prefactor.
+        """
+        self.jump_distance = self._coerce_jump_distance(
+            self.jump_distance if jump_distance is None else jump_distance
+        )
+        if delta is not None:
+            self.delta = self._coerce_delta(delta)
+        else:
+            self.delta = self._coerce_delta(self.delta)
 
         if self.system_type == SystemType.EUCLIDEAN:
             self.prob_prefactor = calculate_prob_prefactor_euclidean(
@@ -263,27 +353,7 @@ class System:
             self.prob_prefactor = calculate_prob_prefactor(
                 len(self.grid), self.jump_distance
             )
-        system_shapes = {
-            SystemType.INVERSE.value: self.num_spins,
-            SystemType.INDEPENDENT.value: (self.num_spins, 2),
-            SystemType.NON_ANTIPODAL.value: n_sites,
-            SystemType.EUCLIDEAN.value: n_sites,
-        }
-        self.system_shape = system_shapes.get(self.system_type.value)
-        self.anneal_data = AnnealData(
-            steps=int(self.parameters.starting_steps),
-            temperature=self.parameters.starting_temp,
-        )
 
-    def compute_neighborhood(
-            self,
-            *,
-            silent: bool = True,
-            distance_metric: DistanceMetric | None = None,
-    ) -> None:
-        """
-        Build and store the neighborhood; also compute probability prefactor.
-        """
         if self.system_type == SystemType.EUCLIDEAN:
             metric = "euclidean" if distance_metric is None else distance_metric
             rows = build_euclidean_neighborhood(
@@ -320,31 +390,23 @@ class System:
                 "System needs to be initialized. Call random_init(), hemisphere_init(), tri_cog_init(), cos_cog_init(), or from_array_init() first."
             )
 
-    def set_parameters(self, parameters: Parameters) -> None:
-        self.parameters = parameters
-        self.parameters_set = True
-        if (
-                self.anneal_data is None
-                or (
-                    self.anneal_data.iterations == 0
-                    and not self.anneal_data.energies
-                    and not self.anneal_data.update_stats
-            )
-        ):
-            self.anneal_data = AnnealData(
-                steps=int(parameters.starting_steps),
-                temperature=parameters.starting_temp,
-            )
+    @property
+    def temperature(self) -> float:
+        """Current runtime annealing temperature."""
+        return float(self._temperature)
+
+    @temperature.setter
+    def temperature(self, value: float) -> None:
+        temperature = float(value)
+        if not np.isfinite(temperature):
+            raise ValueError(f"temperature must be finite, got {value!r}.")
+        if temperature <= 0:
+            raise ValueError(f"temperature must be positive, got {value!r}.")
+        self._temperature = temperature
 
     def set_occupancy(self, occupancy: OccupancyState | None) -> None:
-        """Attach fixed-density occupancy lists and keep legacy aliases in sync."""
+        """Attach fixed-density occupancy lists."""
         self.occupancy = None if occupancy is None else occupancy.copy()
-        if self.occupancy is None:
-            self.up_spins = None
-            self.down_spins = None
-        else:
-            self.up_spins = self.occupancy.occupied
-            self.down_spins = self.occupancy.unoccupied
 
     def sync_occupancy_from_spins(self) -> None:
         """Rebuild occupied/unoccupied lists from current_system."""
@@ -364,12 +426,6 @@ class System:
 
     def snapshot_state(self) -> SystemState:
         """Return a detached copy of mutable spin state."""
-        occupancy = None
-        if self.up_spins is not None and self.down_spins is not None:
-            occupancy = OccupancyState(
-                occupied=list(self.up_spins),
-                unoccupied=list(self.down_spins),
-            )
         return SystemState(
             current_system=(
                 None if self.current_system is None else self.current_system.copy()
@@ -377,7 +433,7 @@ class System:
             current_energy=float(self.current_energy),
             best_system=None if self.best_system is None else self.best_system.copy(),
             best_energy=float(self.best_energy),
-            occupancy=occupancy,
+            occupancy=None if self.occupancy is None else self.occupancy.copy(),
         )
 
     def restore_state(self, state: SystemState) -> None:
@@ -386,7 +442,9 @@ class System:
             None if state.current_system is None else state.current_system.copy()
         )
         self.current_energy = float(state.current_energy)
-        self.best_system = None if state.best_system is None else state.best_system.copy()
+        self.best_system = (
+            None if state.best_system is None else state.best_system.copy()
+        )
         self.best_energy = float(state.best_energy)
         self.set_occupancy(state.occupancy)
 
@@ -420,23 +478,54 @@ class System:
 
     # --- Annealing ---
     def anneal(
-            self,
-            save: bool = True,
-            verbose: bool = False,
-            reinit: bool = False,
+        self,
+        *,
+        schedule: AnnealSchedule | dict | None = None,
+        starting_temp: float | None = None,
+        final_temp: float | None = None,
+        cooling_rate: float | None = None,
+        min_acceptance: float | None = None,
+        max_runtime_hours: float | None = None,
+        max_iterations: int | None = None,
+        steps: int | None = None,
+        save_path: str | Path | None = None,
+        save_interval: int = 1,
+        verbose: bool = False,
+        reinit: bool = False,
     ) -> None:
         self._require_neighborhood()
         self._require_init()
-        simulated_annealing(self, save=save, verbose=verbose, reinit=reinit)
+        run_schedule = self._make_anneal_schedule(
+            schedule,
+            starting_temp=(
+                self.temperature
+                if schedule is None and starting_temp is None
+                else starting_temp
+            ),
+            final_temp=final_temp,
+            cooling_rate=cooling_rate,
+            min_acceptance=min_acceptance,
+            max_runtime_hours=max_runtime_hours,
+            max_iterations=max_iterations,
+            steps=steps,
+        )
+        simulated_annealing(
+            self,
+            schedule=run_schedule,
+            save_path=save_path,
+            save_interval=save_interval,
+            verbose=verbose,
+            reinit=reinit,
+        )
 
     def greedy(
-            self,
-            *,
-            max_steps: int | None = None,
-            min_delta: float = 0.0,
-            track_best: bool = True,
-            reinit: bool = True,
-            verbose: bool = False,
+        self,
+        *,
+        max_steps: int | None = None,
+        min_delta: float = 0.0,
+        track_best: bool = True,
+        reinit: bool = True,
+        verbose: bool = False,
     ) -> GreedyResult:
         self._require_neighborhood()
         self._require_init()
@@ -450,20 +539,26 @@ class System:
         )
 
     def parallel_temper(
-            self,
-            *,
-            temperatures: list[float] | tuple[float, ...] | NDArray[np.float64] | None = None,
-            num_replicas: int = 8,
-            iterations: int | None = None,
-            sweep_steps: int | None = None,
-            exchange_interval: int = 1,
-            initial_states: list[NDArray[np.bool_]] | tuple[NDArray[np.bool_], ...] | None = None,
-            reinit: bool = True,
-            track_best: bool = True,
-            save: bool = False,
-            seed: int | None = None,
-            n_workers: int = 1,
-            verbose: bool = False,
+        self,
+        *,
+        temperatures: (
+            list[float] | tuple[float, ...] | NDArray[np.float64] | None
+        ) = None,
+        num_replicas: int = 8,
+        iterations: int = 100,
+        sweep_steps: int = 100_000,
+        exchange_interval: int = 1,
+        initial_states: (
+            list[NDArray[np.bool_]] | tuple[NDArray[np.bool_], ...] | None
+        ) = None,
+        cold_temp: float = 0.05,
+        hot_temp: float | None = None,
+        reinit: bool = True,
+        track_best: bool = True,
+        save_path: str | Path | None = None,
+        seed: int | None = None,
+        n_workers: int = 1,
+        verbose: bool = False,
     ) -> ParallelTemperingResult:
         self._require_neighborhood()
         self._require_init()
@@ -475,22 +570,24 @@ class System:
             sweep_steps=sweep_steps,
             exchange_interval=exchange_interval,
             initial_states=initial_states,
+            cold_temp=cold_temp,
+            hot_temp=hot_temp,
             reinit=reinit,
             track_best=track_best,
-            save=save,
+            save_path=save_path,
             seed=seed,
             n_workers=n_workers,
             verbose=verbose,
         )
 
     def thermalize(
-            self,
-            target_acceptance: float = 0.6,
-            tolerance: float = 0.05,
-            steps_per_temp: int | None = None,
-            max_adjustments: int = 20,
-            k_p: float = 0.5,
-            verbose: bool = False,
+        self,
+        target_acceptance: float = 0.6,
+        tolerance: float = 0.05,
+        steps_per_temp: int | None = None,
+        max_adjustments: int = 20,
+        k_p: float = 0.5,
+        verbose: bool = False,
     ) -> float:
         """Adjust the annealing temperature to reach a target Metropolis acceptance.
 
@@ -525,10 +622,10 @@ class System:
 
     # --- visualization ---
     def plot(
-            self,
-            plot_current: bool = False,
-            auto_rotate: bool = False,
-            plot_figure: bool = True,
+        self,
+        plot_current: bool = False,
+        auto_rotate: bool = False,
+        plot_figure: bool = True,
     ) -> None:
         system_to_plot = self.current_system if plot_current else self.best_system
         plot_spin_system(
@@ -541,10 +638,12 @@ class System:
         )
 
     def plot_boundary(
-            self, plot_current: bool = False, plot_figure: bool = True
+        self, plot_current: bool = False, plot_figure: bool = True
     ) -> None:
         if self.system_type == SystemType.EUCLIDEAN:
-            raise ValueError("Boundary plotting is only implemented for spherical grids.")
+            raise ValueError(
+                "Boundary plotting is only implemented for spherical grids."
+            )
         system_to_plot = self.current_system if plot_current else self.best_system
         independent = self.system_type == SystemType.INDEPENDENT
         graph_boundary(
@@ -624,101 +723,34 @@ class System:
             data_vars["current_system"] = (spin_dims, self.current_system)
         if self.best_system is not None:
             data_vars["best_system"] = (spin_dims, self.best_system)
-        if self.up_spins is not None:
-            data_vars["up_spins"] = (
-                ("up_index",),
-                np.asarray(self.up_spins, dtype=np.int64),
-            )
-        if self.down_spins is not None:
-            data_vars["down_spins"] = (
-                ("down_index",),
-                np.asarray(self.down_spins, dtype=np.int64),
-            )
 
         ds = xr.Dataset(data_vars=data_vars, coords=coords)
 
         # Minimal but sufficient attrs to validate on load
-        ds.attrs.update(
-            {
-                "format_version": "1.0",
-                "system_type": self.system_type.value,
-                "delta": self.delta.value,
-                "antipodal": bool(self.antipodal),
-                "jump_distance": float(self.jump_distance),
-                "initialized": bool(self.initialized),
-                "num_spins": int(self.num_spins),
-                "site_count": int(self.grid.shape[0]),
-                "current_energy": float(self.current_energy),
-                "best_energy": float(self.best_energy),
-                "parameters_json": self._to_jsonable(self.parameters),
-                "anneal_data_json": self._to_jsonable(self.anneal_data),
-                "system_shape_json": self._to_jsonable(self.system_shape),
-            }
-        )
+        attrs = {
+            "format_version": "1.0",
+            "system_type": self.system_type.value,
+            "delta": self.delta.value,
+            "antipodal": bool(self.antipodal),
+            "initialized": bool(self.initialized),
+            "num_spins": int(self.num_spins),
+            "site_count": int(self.grid.shape[0]),
+            "current_energy": float(self.current_energy),
+            "best_energy": float(self.best_energy),
+            "temperature": float(self.temperature),
+            "anneal_data_json": self._to_jsonable(self.anneal_data),
+            "system_shape_json": self._to_jsonable(self.system_shape),
+        }
+        if self.jump_distance is not None:
+            attrs["jump_distance"] = float(self.jump_distance)
+        ds.attrs.update(attrs)
         return ds
 
-    def save_state(self, save_path: str | Path) -> Path:
+    def save(self, save_path: str | Path) -> Path:
         """Write the NetCDF state file and return its path."""
         _, netcdf_path = self._resolve_save_paths(save_path)
         self.to_dataset().to_netcdf(netcdf_path)
         return netcdf_path
-
-    def save_legacy_outputs(self, save_dir: str | Path) -> None:
-        """Write legacy gzip/CSV outputs used by older analysis scripts."""
-        save_dir = Path(save_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
-        if self.parameters is None:
-            raise RuntimeError("self.parameters is None.")
-
-        if self.current_system is None or self.best_system is None:
-            raise RuntimeError("current_system/best_system are missing.")
-        if self.anneal_data is None:
-            raise RuntimeError("self.anneal_data is None.")
-
-        # You may need to adjust these attribute names to match your AnnealData
-        anneal_data = self.anneal_data
-        iteration = getattr(self.anneal_data, "iterations", 0)
-
-        energies = np.asarray(self.anneal_data.energies, dtype=float)
-
-        np.savetxt(
-            save_dir / f"system_cycle{iteration}.gz",
-            self.current_system,
-            fmt="%i",
-        )
-
-        np.savetxt(
-            save_dir / "best_system.gz",
-            self.best_system,
-            fmt="%i",
-        )
-
-        pd.DataFrame(
-            anneal_data.update_stats,
-            columns=["Temperature", "Acceptance Rate"],
-        ).to_csv(save_dir / "anneal_stats.csv", index=False)
-
-        # probability_prefactor -> self.prob_prefactor
-        pd.DataFrame(
-            np.column_stack(
-                (
-                    energies,
-                    self.prob_prefactor * energies,
-                )
-            ),
-            columns=["energy", "probability"],
-        ).to_csv(save_dir / "cycle_probabilities.csv", index=False)
-
-    def save(self, save_path: str | Path) -> None:
-        """
-        Save state to NetCDF plus legacy gzip/CSV outputs.
-
-        The grid and neighborhood are intentionally not saved. Reconstructing a
-        system after loading requires the same grid and a fresh neighborhood.
-        """
-        save_dir, netcdf_path = self._resolve_save_paths(save_path)
-        self.to_dataset().to_netcdf(netcdf_path)
-        self.save_legacy_outputs(save_dir)
 
     def load(self, load_path: str | Path) -> None:
         """
@@ -732,10 +764,10 @@ class System:
 
         ds = xr.load_dataset(load_path)
 
-        saved_system_type = SystemType(
+        saved_system_type = self._coerce_system_type(
             ds.attrs.get("system_type", self.system_type.value)
         )
-        saved_delta = DeltaType(ds.attrs.get("delta", self.delta.value))
+        saved_delta = self._coerce_delta(ds.attrs.get("delta", self.delta.value))
 
         # 1) Validate against current instance (grid must already exist)
         if not isinstance(self.grid, np.ndarray) or self.grid.ndim != 2:
@@ -760,12 +792,12 @@ class System:
             )
 
         # Enums and core attrs
-        if saved_system_type != self.system_type or saved_delta != self.delta:
+        if saved_system_type != self.system_type:
             raise ValueError(
-                "Saved state system_type/delta do not match this instance. "
-                f"saved=({saved_system_type.value}, {saved_delta.value}) "
-                f"current=({self.system_type.value}, {self.delta.value})"
+                "Saved state system_type does not match this instance. "
+                f"saved={saved_system_type.value} current={self.system_type.value}"
             )
+        self.delta = saved_delta
 
         self.antipodal = bool(
             ds.attrs.get(
@@ -773,11 +805,14 @@ class System:
                 self.system_type in (SystemType.INVERSE, SystemType.INDEPENDENT),
             )
         )
-        self.jump_distance = float(ds.attrs.get("jump_distance", self.jump_distance))
+        if "jump_distance" in ds.attrs:
+            self.jump_distance = self._coerce_jump_distance(
+                ds.attrs.get("jump_distance")
+            )
         self.initialized = bool(ds.attrs.get("initialized", False))
         loaded_num_spins = int(ds.attrs.get("num_spins", self.grid.shape[0] // 2))
         if saved_system_type == SystemType.EUCLIDEAN and not (
-                0 < loaded_num_spins < self.grid.shape[0]
+            0 < loaded_num_spins < self.grid.shape[0]
         ):
             raise ValueError(
                 f"Saved Euclidean num_spins must be between 1 and N-1 "
@@ -787,22 +822,18 @@ class System:
         self.current_energy = float(ds.attrs.get("current_energy", 0.0))
         self.best_energy = float(ds.attrs.get("best_energy", 0.0))
         self.system_shape = (
-                self._from_jsonable(ds.attrs.get("system_shape_json", "null")) or None
+            self._from_jsonable(ds.attrs.get("system_shape_json", "null")) or None
         )
-
-        params_dict = self._from_jsonable(ds.attrs.get("parameters_json", "null"))
-        if isinstance(params_dict, dict):
-            self.parameters = Parameters(**params_dict)
 
         anneal_dict = self._from_jsonable(ds.attrs.get("anneal_data_json", "null"))
         if isinstance(anneal_dict, dict):
-            self.anneal_data = AnnealData(**anneal_dict)
+            self.anneal_data = AnnealData.from_mapping(anneal_dict)
+            if "temperature" in anneal_dict and "temperature" not in ds.attrs:
+                self.temperature = float(anneal_dict["temperature"])
         else:
-            # reasonable default if missing
-            self.anneal_data = AnnealData(
-                steps=int(2.5 * len(self.grid)),
-                temperature=self.parameters.starting_temp,
-            )
+            self.anneal_data = AnnealData()
+        if "temperature" in ds.attrs:
+            self.temperature = float(ds.attrs["temperature"])
 
         # 2) Arrays
         self.current_system = None
@@ -812,8 +843,8 @@ class System:
                 dtype=np.bool_,
             )
             if (
-                    self.system_type == SystemType.EUCLIDEAN
-                    and int(np.count_nonzero(self.current_system)) != self.num_spins
+                self.system_type == SystemType.EUCLIDEAN
+                and int(np.count_nonzero(self.current_system)) != self.num_spins
             ):
                 raise ValueError(
                     "Saved Euclidean current_system occupied count does not match "
@@ -827,44 +858,24 @@ class System:
                 dtype=np.bool_,
             )
             if (
-                    self.system_type == SystemType.EUCLIDEAN
-                    and int(np.count_nonzero(self.best_system)) != self.num_spins
+                self.system_type == SystemType.EUCLIDEAN
+                and int(np.count_nonzero(self.best_system)) != self.num_spins
             ):
                 raise ValueError(
                     "Saved Euclidean best_system occupied count does not match "
                     f"num_spins={self.num_spins}."
                 )
 
-        loaded_occupancy: OccupancyState | None = None
-        loaded_up_spins = None
-        if "up_spins" in ds:
-            loaded_up_spins = [int(x) for x in np.asarray(ds["up_spins"].values)]
-        loaded_down_spins = None
-        if "down_spins" in ds:
-            loaded_down_spins = [int(x) for x in np.asarray(ds["down_spins"].values)]
-        if loaded_up_spins is not None or loaded_down_spins is not None:
-            loaded_occupancy = OccupancyState(
-                occupied=[] if loaded_up_spins is None else loaded_up_spins,
-                unoccupied=[] if loaded_down_spins is None else loaded_down_spins,
-            )
-            loaded_occupancy.validate(
-                n_sites=int(self.grid.shape[0]),
-                expected_occupied=(
-                    int(self.num_spins)
-                    if self.system_type == SystemType.EUCLIDEAN
-                    else None
-                ),
-                spin_array=self.current_system,
-            )
-            self.set_occupancy(loaded_occupancy)
-        elif not self.antipodal and self.current_system is not None:
+        if not self.antipodal and self.current_system is not None:
             self.sync_occupancy_from_spins()
         else:
             self.set_occupancy(None)
 
         # 3) Recompute prob_prefactor from live grid + jump_distance (grid wasn't saved)
         self.dimension = int(self.grid.shape[1])
-        if self.system_type == SystemType.EUCLIDEAN:
+        if self.jump_distance is None:
+            self.prob_prefactor = 0.0
+        elif self.system_type == SystemType.EUCLIDEAN:
             self.prob_prefactor = calculate_prob_prefactor_euclidean(
                 len(self.grid), self.jump_distance, self.dimension
             )

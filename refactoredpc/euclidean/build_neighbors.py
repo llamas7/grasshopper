@@ -15,10 +15,6 @@ except ImportError:
     def tqdm(iterable, *args, **kwargs):
         return iterable
 
-def get_distances_euclidean(grid_points: np.ndarray, spin: np.ndarray) -> np.ndarray:
-    """Euclidean distances in R^d."""
-    return np.linalg.norm(grid_points - spin, axis=1)
-
 
 def estimate_bounding_box_volume(points: np.ndarray) -> float:
     """

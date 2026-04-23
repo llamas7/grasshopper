@@ -27,13 +27,15 @@ def _require_greedy_ready(system: "System") -> None:
     if system.best_system is None:
         raise RuntimeError("System has no best spin state. Initialize it first.")
     if system.neighborhood is None:
-        raise RuntimeError("System has no neighborhood. Call compute_neighborhood() first.")
+        raise RuntimeError(
+            "System has no neighborhood. Call compute_neighborhood() first."
+        )
 
 
 def _recompute_energy_state(
-        system: "System",
-        engine: Engine,
-        track_best: bool,
+    system: "System",
+    engine: Engine,
+    track_best: bool,
 ) -> np.ndarray:
     grid_gen = engine.grid_gen
     system_energy_fn = engine.energy
@@ -41,7 +43,9 @@ def _recompute_energy_state(
     system.current_energy = float(
         system_energy_fn(system.current_system, system.neighborhood)
     )
-    system.best_energy = float(system_energy_fn(system.best_system, system.neighborhood))
+    system.best_energy = float(
+        system_energy_fn(system.best_system, system.neighborhood)
+    )
     if track_best and system.current_energy > system.best_energy:
         system.best_energy = system.current_energy
         system.best_system = system.current_system.copy()
@@ -49,13 +53,13 @@ def _recompute_energy_state(
 
 
 def greedy_optimization(
-        system: "System",
-        *,
-        max_steps: int | None = None,
-        min_delta: float = 0.0,
-        track_best: bool = True,
-        reinit: bool = True,
-        verbose: bool = False,
+    system: "System",
+    *,
+    max_steps: int | None = None,
+    min_delta: float = 0.0,
+    track_best: bool = True,
+    reinit: bool = False,
+    verbose: bool = False,
 ) -> GreedyResult:
     """Run deterministic greedy optimization using the active system engine.
 

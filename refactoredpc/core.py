@@ -1,12 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, Callable
 import numpy as np
 from numpy.typing import NDArray
-
-if TYPE_CHECKING:
-    from .system import System
 
 
 @dataclass
@@ -40,11 +37,27 @@ class NonAntipodalNeighborhoodCSR:
 
     @classmethod
     def from_rows(
-            cls,
-            rows: list[NonAntipodalNeighborhood],
+        cls,
+        rows: list[NonAntipodalNeighborhood],
     ) -> "NonAntipodalNeighborhoodCSR":
+        sorted_neighbor_rows: list[NDArray[np.int64]] = []
+        sorted_contribution_rows: list[NDArray[np.float64]] = []
+        for row in rows:
+            neighbor_row = np.asarray(row.neighbor_spins, dtype=np.int64)
+            contribution_row = np.asarray(row.contributions, dtype=np.float64)
+            if neighbor_row.shape != contribution_row.shape:
+                raise ValueError(
+                    "neighbor_spins and contributions must have matching shapes."
+                )
+            if neighbor_row.size > 1:
+                order = np.argsort(neighbor_row, kind="stable")
+                neighbor_row = neighbor_row[order]
+                contribution_row = contribution_row[order]
+            sorted_neighbor_rows.append(np.ascontiguousarray(neighbor_row))
+            sorted_contribution_rows.append(np.ascontiguousarray(contribution_row))
+
         lengths = np.fromiter(
-            (len(row.neighbor_spins) for row in rows),
+            (len(row) for row in sorted_neighbor_rows),
             count=len(rows),
             dtype=np.int64,
         )
@@ -55,12 +68,13 @@ class NonAntipodalNeighborhoodCSR:
             neighbor_spins = np.array([], dtype=np.int64)
             contributions = np.array([], dtype=np.float64)
         else:
-            neighbor_spins = np.concatenate(
-                [row.neighbor_spins for row in rows]
-            ).astype(np.int64, copy=False)
-            contributions = np.concatenate(
-                [row.contributions for row in rows]
-            ).astype(np.float64, copy=False)
+            neighbor_spins = np.concatenate(sorted_neighbor_rows).astype(
+                np.int64,
+                copy=False,
+            )
+            contributions = np.concatenate(sorted_contribution_rows).astype(
+                np.float64, copy=False
+            )
         spin_potential = np.asarray(
             [row.spin_potential for row in rows],
             dtype=np.float64,
@@ -92,8 +106,9 @@ class NonAntipodalNeighborhoodCSR:
         )
 
 
-NeighborhoodLike = Neighborhood | NonAntipodalNeighborhood
-NeighborhoodData = list[Neighborhood] | list[NonAntipodalNeighborhood] | NonAntipodalNeighborhoodCSR
+NeighborhoodData = (
+    list[Neighborhood] | list[NonAntipodalNeighborhood] | NonAntipodalNeighborhoodCSR
+)
 
 
 @dataclass(frozen=True)
@@ -107,17 +122,21 @@ class Engine:
     suggest: Callable[..., tuple[Any, float]]
     best_update: Callable[..., tuple[Any | None, float]]
 
-    def __getitem__(self, key: str) -> Any:
-        """Compatibility shim for older internal dictionary-style access."""
-        return getattr(self, key)
-
 
 @dataclass
 class OccupancyState:
-    """Cached occupied/unoccupied site lists for fixed-density systems."""
+    """Cached occupied/unoccupied site arrays for fixed-density systems."""
 
-    occupied: list[int] = field(default_factory=list)
-    unoccupied: list[int] = field(default_factory=list)
+    occupied: NDArray[np.intp] = field(
+        default_factory=lambda: np.empty(0, dtype=np.intp)
+    )
+    unoccupied: NDArray[np.intp] = field(
+        default_factory=lambda: np.empty(0, dtype=np.intp)
+    )
+
+    def __post_init__(self) -> None:
+        self.occupied = np.ascontiguousarray(self.occupied, dtype=np.intp)
+        self.unoccupied = np.ascontiguousarray(self.unoccupied, dtype=np.intp)
 
     @classmethod
     def from_spin_array(cls, spin_array: NDArray[np.bool_]) -> "OccupancyState":
@@ -127,38 +146,40 @@ class OccupancyState:
                 f"OccupancyState requires a one-dimensional spin array, got {spins.shape}."
             )
         return cls(
-            occupied=np.flatnonzero(spins).astype(np.intp).tolist(),
-            unoccupied=np.flatnonzero(~spins).astype(np.intp).tolist(),
+            occupied=np.ascontiguousarray(np.flatnonzero(spins), dtype=np.intp),
+            unoccupied=np.ascontiguousarray(np.flatnonzero(~spins), dtype=np.intp),
         )
 
     def copy(self) -> "OccupancyState":
         return OccupancyState(
-            occupied=list(self.occupied),
-            unoccupied=list(self.unoccupied),
+            occupied=self.occupied.copy(),
+            unoccupied=self.unoccupied.copy(),
         )
 
     def validate(
-            self,
-            *,
-            n_sites: int | None = None,
-            expected_occupied: int | None = None,
-            spin_array: NDArray[np.bool_] | None = None,
+        self,
+        *,
+        n_sites: int | None = None,
+        expected_occupied: int | None = None,
+        spin_array: NDArray[np.bool_] | None = None,
     ) -> None:
-        occupied = [int(site) for site in self.occupied]
-        unoccupied = [int(site) for site in self.unoccupied]
-        if len(set(occupied)) != len(occupied):
+        occupied = np.asarray(self.occupied, dtype=np.intp)
+        unoccupied = np.asarray(self.unoccupied, dtype=np.intp)
+        occupied_list = occupied.astype(int, copy=False).tolist()
+        unoccupied_list = unoccupied.astype(int, copy=False).tolist()
+        if len(set(occupied_list)) != occupied.size:
             raise ValueError("occupied sites contain duplicates.")
-        if len(set(unoccupied)) != len(unoccupied):
+        if len(set(unoccupied_list)) != unoccupied.size:
             raise ValueError("unoccupied sites contain duplicates.")
-        if set(occupied).intersection(unoccupied):
+        if set(occupied_list).intersection(unoccupied_list):
             raise ValueError("occupied and unoccupied sites overlap.")
-        if expected_occupied is not None and len(occupied) != int(expected_occupied):
+        if expected_occupied is not None and occupied.size != int(expected_occupied):
             raise ValueError(
-                f"Expected {expected_occupied} occupied sites, got {len(occupied)}."
+                f"Expected {expected_occupied} occupied sites, got {occupied.size}."
             )
         if n_sites is not None:
             all_sites = set(range(int(n_sites)))
-            listed_sites = set(occupied).union(unoccupied)
+            listed_sites = set(occupied_list).union(unoccupied_list)
             if listed_sites != all_sites:
                 missing = sorted(all_sites - listed_sites)
                 extra = sorted(listed_sites - all_sites)
@@ -168,7 +189,11 @@ class OccupancyState:
                 )
         if spin_array is not None:
             expected = OccupancyState.from_spin_array(spin_array)
-            if occupied != expected.occupied or unoccupied != expected.unoccupied:
+            if set(occupied_list) != set(
+                expected.occupied.astype(int, copy=False).tolist()
+            ) or set(unoccupied_list) != set(
+                expected.unoccupied.astype(int, copy=False).tolist()
+            ):
                 raise ValueError("Occupancy lists do not match the spin array.")
 
 
@@ -194,28 +219,96 @@ class SystemState:
         )
 
 
-@dataclass
-class Parameters:
-    starting_temp: float = 50
+@dataclass(frozen=True)
+class AnnealSchedule:
+    """Immutable simulated-annealing schedule configuration."""
+
+    starting_temp: float = 50.0
     final_temp: float = 0.05
     cooling_rate: float = 0.954993
-    min_acceptance: float = 0.0005
-    max_runtime: float = 1  # Hours
+    min_acceptance: float = 0.00005
+    max_runtime_hours: float = 1.0
     max_iterations: int = 100
-    starting_steps: int = 100000
-    its_per_save: int = 1
-    grid_file: str | None = None
-    save_dir: str = "./output_data"
-    load_flag: bool = False
+    starting_steps: int = 100_000
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "AnnealSchedule":
+        if not data:
+            return cls()
+        allowed = set(cls.__dataclass_fields__)
+        unknown = sorted(set(data) - allowed)
+        if unknown:
+            raise TypeError(f"Unknown AnnealSchedule field(s): {unknown}.")
+        return cls(**dict(data))
+
+    def validate(self) -> None:
+        if self.starting_temp <= 0:
+            raise ValueError("anneal_schedule.starting_temp must be positive.")
+        if self.final_temp < 0:
+            raise ValueError("anneal_schedule.final_temp must be nonnegative.")
+        if self.cooling_rate <= 0 or self.cooling_rate >= 1:
+            raise ValueError("anneal_schedule.cooling_rate must be between 0 and 1.")
+        if self.min_acceptance < 0:
+            raise ValueError("anneal_schedule.min_acceptance must be nonnegative.")
+        if self.max_runtime_hours < 0:
+            raise ValueError("anneal_schedule.max_runtime_hours must be nonnegative.")
+        if self.max_iterations < 0:
+            raise ValueError("anneal_schedule.max_iterations must be nonnegative.")
+        if self.starting_steps <= 0:
+            raise ValueError("anneal_schedule.starting_steps must be positive.")
+
+
+@dataclass(frozen=True)
+class AnnealRecord:
+    iteration: int
+    temperature: float
+    steps: int
+    acceptance_rate: float
+    current_energy: float
+    best_energy: float
 
 
 @dataclass
 class AnnealData:
-    steps: int
-    temperature: float
     iterations: int = 0
-    energies: list[float] = field(default_factory=list)
-    update_stats: list[list] = field(default_factory=list)
+    records: list[AnnealRecord] = field(default_factory=list)
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "AnnealData":
+        if not data:
+            return cls()
+
+        records: list[AnnealRecord] = []
+        for record in data.get("records", []) or []:
+            if isinstance(record, AnnealRecord):
+                records.append(record)
+            elif isinstance(record, dict):
+                records.append(AnnealRecord(**record))
+
+        return cls(
+            iterations=int(data.get("iterations", len(records))),
+            records=records,
+        )
+
+    def append_record(
+        self,
+        *,
+        temperature: float,
+        steps: int,
+        acceptance_rate: float,
+        current_energy: float,
+        best_energy: float,
+    ) -> None:
+        self.records.append(
+            AnnealRecord(
+                iteration=int(self.iterations),
+                temperature=float(temperature),
+                steps=int(steps),
+                acceptance_rate=float(acceptance_rate),
+                current_energy=float(current_energy),
+                best_energy=float(best_energy),
+            )
+        )
 
 
 class SystemType(str, Enum):

@@ -28,10 +28,6 @@ def require_cupy() -> Any:
 GPUDiscreteDeltaName = Literal["two", "one_star", "two_star"]
 
 
-def calculate_prob_prefactor_gpu(num_points: int, theta: float) -> float:
-    return 4.0 / (np.sin(theta) * num_points ** (3 / 2) * np.sqrt(np.pi))
-
-
 # ============================================================
 # GPU delta kernels
 # ============================================================
@@ -118,21 +114,6 @@ def validate_grid_points_gpu(grid_points: np.ndarray) -> np.ndarray:
     if grid_points_cpu.ndim != 2 or grid_points_cpu.shape[1] != 3:
         raise ValueError("grid_points must have shape (N, 3)")
     return np.ascontiguousarray(grid_points_cpu)
-
-
-def get_euclid_distances_gpu(
-    grid_points_gpu: cp.ndarray,
-    spin_gpu: cp.ndarray,
-) -> cp.ndarray:
-    return cp.linalg.norm(grid_points_gpu - spin_gpu, axis=1)
-
-
-def get_angular_distances_gpu(
-    grid_points_gpu: cp.ndarray,
-    spin_gpu: cp.ndarray,
-) -> cp.ndarray:
-    dot_products_gpu = cp.clip(grid_points_gpu @ spin_gpu, -1.0, 1.0)
-    return cp.arccos(dot_products_gpu)
 
 
 def compute_batched_angles_gpu(

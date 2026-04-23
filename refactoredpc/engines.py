@@ -61,13 +61,18 @@ def ind_best_update(system: System, energy_array: NDArray[np.float64]):
 
 
 def na_suggest(system: System, energy_array: NDArray[np.float64]):
-    if not system.up_spins or not system.down_spins:
+    occupancy = system.occupancy
+    if (
+            occupancy is None
+            or occupancy.occupied.size == 0
+            or occupancy.unoccupied.size == 0
+    ):
         raise ValueError(
             "Non-antipodal moves require at least one occupied and one "
             "unoccupied site."
         )
-    suggested_spin = np.random.randint(len(system.up_spins))
-    suggested_move = np.random.randint(len(system.down_spins))
+    suggested_spin = np.random.randint(len(occupancy.occupied))
+    suggested_move = np.random.randint(len(occupancy.unoccupied))
     suggested_update = (suggested_spin, suggested_move)
     energy_delta = calculate_non_antipodal_move_delta_energy(
         system, suggested_update, energy_array
@@ -76,13 +81,14 @@ def na_suggest(system: System, energy_array: NDArray[np.float64]):
 
 
 def na_best_update(system: System, energy_array: NDArray[np.float64]):
-    if system.up_spins is None or system.down_spins is None:
-        raise RuntimeError("Non-antipodal spin lists have not been initialized.")
-    if not system.up_spins or not system.down_spins:
+    occupancy = system.occupancy
+    if occupancy is None:
+        raise RuntimeError("Non-antipodal occupancy has not been initialized.")
+    if occupancy.occupied.size == 0 or occupancy.unoccupied.size == 0:
         return None, float("-inf")
 
-    up_site_indices = np.asarray(system.up_spins, dtype=np.intp)
-    down_site_indices = np.asarray(system.down_spins, dtype=np.intp)
+    up_site_indices = occupancy.occupied
+    down_site_indices = occupancy.unoccupied
     up_idx = int(np.argmin(energy_array[up_site_indices]))
     down_idx = int(np.argmax(energy_array[down_site_indices]))
     suggested_update = (up_idx, down_idx)

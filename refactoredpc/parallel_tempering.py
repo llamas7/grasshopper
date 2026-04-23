@@ -3,20 +3,42 @@ from __future__ import annotations
 import copy
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from multiprocessing import shared_memory
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
 
 from .annealing import metropolis_sweep
-from .core import Engine, OccupancyState
+from .core import (
+    AnnealRecord,
+    Engine,
+    NonAntipodalNeighborhoodCSR,
+    OccupancyState,
+)
 from .engines import get_engine
-from .initialization import build_spin_lists, init_from_array, init_random
+from .initialization import init_from_array, init_random, sync_occupancy
 
 if TYPE_CHECKING:
     from .system import System
 
 
 _WORKER_CONTEXT: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _SharedArraySpec:
+    name: str
+    shape: tuple[int, ...]
+    dtype: str
+
+
+@dataclass(frozen=True)
+class _SharedCSRSpec:
+    indptr: _SharedArraySpec
+    neighbor_spins: _SharedArraySpec
+    contributions: _SharedArraySpec
+    spin_potential: _SharedArraySpec
 
 
 @dataclass(frozen=True)
@@ -42,16 +64,14 @@ class _WorkerSystem:
     current_energy: float
     best_system: np.ndarray
     best_energy: float
-    up_spins: list[int] | None
-    down_spins: list[int] | None
+    occupancy: OccupancyState | None
 
 
 @dataclass(frozen=True)
 class _ReplicaTask:
     current_system: np.ndarray
     current_energy: float
-    up_spins: list[int] | None
-    down_spins: list[int] | None
+    occupancy: OccupancyState | None
     energy_grid: np.ndarray
     temperature: float
     sweep_steps: int
@@ -63,24 +83,112 @@ class _ReplicaTask:
 class _ReplicaSweepResult:
     current_system: np.ndarray
     current_energy: float
-    up_spins: list[int] | None
-    down_spins: list[int] | None
+    occupancy: OccupancyState | None
     energy_grid: np.ndarray
     acceptance: float
 
 
+def _share_array(array: np.ndarray) -> tuple[_SharedArraySpec, shared_memory.SharedMemory]:
+    array = np.ascontiguousarray(array)
+    shm = shared_memory.SharedMemory(create=True, size=max(1, int(array.nbytes)))
+    view = np.ndarray(array.shape, dtype=array.dtype, buffer=shm.buf)
+    view[...] = array
+    return (
+        _SharedArraySpec(
+            name=shm.name,
+            shape=tuple(int(dim) for dim in array.shape),
+            dtype=array.dtype.str,
+        ),
+        shm,
+    )
+
+
+def _share_csr_neighborhood(
+        neighborhood: NonAntipodalNeighborhoodCSR,
+) -> tuple[_SharedCSRSpec, list[shared_memory.SharedMemory]]:
+    specs: list[_SharedArraySpec] = []
+    handles: list[shared_memory.SharedMemory] = []
+    for array in (
+            neighborhood.indptr,
+            neighborhood.neighbor_spins,
+            neighborhood.contributions,
+            neighborhood.spin_potential,
+    ):
+        spec, handle = _share_array(array)
+        specs.append(spec)
+        handles.append(handle)
+    return (
+        _SharedCSRSpec(
+            indptr=specs[0],
+            neighbor_spins=specs[1],
+            contributions=specs[2],
+            spin_potential=specs[3],
+        ),
+        handles,
+    )
+
+
+def _attach_shared_array(
+        spec: _SharedArraySpec,
+) -> tuple[np.ndarray, shared_memory.SharedMemory]:
+    shm = shared_memory.SharedMemory(name=spec.name)
+    array = np.ndarray(spec.shape, dtype=np.dtype(spec.dtype), buffer=shm.buf)
+    return array, shm
+
+
+def _attach_worker_neighborhood(
+        neighborhood_context: Any,
+) -> tuple[Any, list[shared_memory.SharedMemory]]:
+    if not isinstance(neighborhood_context, _SharedCSRSpec):
+        return neighborhood_context, []
+
+    indptr, indptr_shm = _attach_shared_array(neighborhood_context.indptr)
+    neighbor_spins, neighbor_spins_shm = _attach_shared_array(
+        neighborhood_context.neighbor_spins
+    )
+    contributions, contributions_shm = _attach_shared_array(
+        neighborhood_context.contributions
+    )
+    spin_potential, spin_potential_shm = _attach_shared_array(
+        neighborhood_context.spin_potential
+    )
+    return (
+        NonAntipodalNeighborhoodCSR(
+            indptr=indptr,
+            neighbor_spins=neighbor_spins,
+            contributions=contributions,
+            spin_potential=spin_potential,
+        ),
+        [indptr_shm, neighbor_spins_shm, contributions_shm, spin_potential_shm],
+    )
+
+
+def _release_shared_memory(handles: list[shared_memory.SharedMemory]) -> None:
+    for handle in handles:
+        try:
+            handle.close()
+        except FileNotFoundError:
+            pass
+        try:
+            handle.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _init_worker_context(
         system_type: Any,
-        neighborhood: Any,
+        neighborhood_context: Any,
         num_spins: int,
         antipodal: bool,
 ) -> None:
     global _WORKER_CONTEXT
+    neighborhood, shared_handles = _attach_worker_neighborhood(neighborhood_context)
     _WORKER_CONTEXT = {
         "system_type": system_type,
         "neighborhood": neighborhood,
         "num_spins": int(num_spins),
         "antipodal": bool(antipodal),
+        "shared_memory_handles": shared_handles,
     }
 
 
@@ -99,6 +207,8 @@ def _temperature_ladder(
         system: "System",
         temperatures: Sequence[float] | None,
         num_replicas: int,
+        cold_temp: float,
+        hot_temp: float | None,
 ) -> np.ndarray:
     if temperatures is not None:
         ladder = np.asarray(temperatures, dtype=float)
@@ -109,8 +219,8 @@ def _temperature_ladder(
     else:
         if num_replicas < 2:
             raise ValueError("num_replicas must be at least 2.")
-        cold = max(float(system.parameters.final_temp), 1e-12)
-        hot = max(float(system.anneal_data.temperature), cold)
+        cold = max(float(cold_temp), 1e-12)
+        hot = max(float(system.temperature if hot_temp is None else hot_temp), cold)
         if hot <= cold:
             hot = cold * 10.0
         ladder = np.geomspace(cold, hot, int(num_replicas))
@@ -128,15 +238,7 @@ def _clone_replica(system: "System") -> "System":
     replica.best_system = system.current_system.copy()
     replica.current_energy = float(system.current_energy)
     replica.best_energy = float(system.current_energy)
-    if system.up_spins is not None and system.down_spins is not None:
-        replica.set_occupancy(
-            OccupancyState(
-                occupied=list(system.up_spins),
-                unoccupied=list(system.down_spins),
-            )
-        )
-    else:
-        replica.set_occupancy(None)
+    replica.set_occupancy(system.occupancy)
     return replica
 
 
@@ -173,7 +275,7 @@ def _make_replicas(
         replica.best_system = replica.current_system.copy()
         replica.best_energy = replica.current_energy
         if not replica.antipodal:
-            build_spin_lists(replica)
+            sync_occupancy(replica)
     return replicas
 
 
@@ -183,14 +285,12 @@ def _recompute_replica(replica: "System", engine: Engine) -> np.ndarray:
         engine.energy(replica.current_system, replica.neighborhood)
     )
     if not replica.antipodal:
-        build_spin_lists(replica)
+        sync_occupancy(replica)
     return energy_grid
 
 
-def _build_spin_lists_from_state(system: _WorkerSystem) -> None:
-    occupancy = OccupancyState.from_spin_array(system.current_system)
-    system.up_spins = occupancy.occupied
-    system.down_spins = occupancy.unoccupied
+def _sync_worker_occupancy(system: _WorkerSystem) -> None:
+    system.occupancy = OccupancyState.from_spin_array(system.current_system)
 
 
 def _make_worker_task(
@@ -204,10 +304,7 @@ def _make_worker_task(
     return _ReplicaTask(
         current_system=replica.current_system,
         current_energy=float(replica.current_energy),
-        up_spins=list(replica.up_spins) if replica.up_spins is not None else None,
-        down_spins=(
-            list(replica.down_spins) if replica.down_spins is not None else None
-        ),
+        occupancy=None if replica.occupancy is None else replica.occupancy.copy(),
         energy_grid=energy_grid,
         temperature=float(temperature),
         sweep_steps=int(sweep_steps),
@@ -241,8 +338,7 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
         current_energy=float(task.current_energy),
         best_system=task.current_system.copy(),
         best_energy=float(task.current_energy),
-        up_spins=list(task.up_spins) if task.up_spins is not None else None,
-        down_spins=list(task.down_spins) if task.down_spins is not None else None,
+        occupancy=None if task.occupancy is None else task.occupancy.copy(),
     )
     energy_grid = task.energy_grid.copy()
     engine = get_engine(system.system_type)
@@ -260,13 +356,12 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
             engine.energy(system.current_system, system.neighborhood)
         )
         if not system.antipodal:
-            _build_spin_lists_from_state(system)
+            _sync_worker_occupancy(system)
 
     return _ReplicaSweepResult(
         current_system=system.current_system,
         current_energy=float(system.current_energy),
-        up_spins=list(system.up_spins) if system.up_spins is not None else None,
-        down_spins=list(system.down_spins) if system.down_spins is not None else None,
+        occupancy=None if system.occupancy is None else system.occupancy.copy(),
         energy_grid=energy_grid,
         acceptance=float(acceptance),
     )
@@ -275,15 +370,7 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
 def _apply_sweep_result(replica: "System", result: _ReplicaSweepResult) -> None:
     replica.current_system = result.current_system
     replica.current_energy = float(result.current_energy)
-    if result.up_spins is not None and result.down_spins is not None:
-        replica.set_occupancy(
-            OccupancyState(
-                occupied=list(result.up_spins),
-                unoccupied=list(result.down_spins),
-            )
-        )
-    else:
-        replica.set_occupancy(None)
+    replica.set_occupancy(result.occupancy)
 
 
 def _accept_exchange(
@@ -302,15 +389,7 @@ def _accept_exchange(
 def _copy_replica_state(source: "System", target: "System") -> None:
     target.current_system = source.current_system.copy()
     target.current_energy = float(source.current_energy)
-    if source.up_spins is not None and source.down_spins is not None:
-        target.set_occupancy(
-            OccupancyState(
-                occupied=list(source.up_spins),
-                unoccupied=list(source.down_spins),
-            )
-        )
-    else:
-        target.set_occupancy(None)
+    target.set_occupancy(source.occupancy)
 
 
 def _set_best(system: "System", best_system: np.ndarray, best_energy: float) -> None:
@@ -323,13 +402,15 @@ def parallel_tempering(
         *,
         temperatures: Sequence[float] | None = None,
         num_replicas: int = 8,
-        iterations: int | None = None,
-        sweep_steps: int | None = None,
+        iterations: int = 100,
+        sweep_steps: int = 100_000,
         exchange_interval: int = 1,
         initial_states: Sequence[np.ndarray] | None = None,
+        cold_temp: float = 0.05,
+        hot_temp: float | None = None,
         reinit: bool = True,
         track_best: bool = True,
-        save: bool = False,
+        save_path: str | Path | None = None,
         seed: int | None = None,
         n_workers: int = 1,
         verbose: bool = False,
@@ -338,15 +419,11 @@ def parallel_tempering(
 
     With n_workers > 1, each worker process is initialized once with the
     immutable neighborhood/engine context. Per-iteration tasks send only replica
-    state, spin lists, energy grids, and temperature data.
+    state, occupancy, energy grids, and temperature data.
     """
     _require_parallel_tempering_ready(system)
     if seed is not None:
         np.random.seed(seed)
-    if iterations is None:
-        iterations = int(system.parameters.max_iterations)
-    if sweep_steps is None:
-        sweep_steps = int(system.anneal_data.steps)
     iterations = int(iterations)
     sweep_steps = int(sweep_steps)
     exchange_interval = int(exchange_interval)
@@ -360,7 +437,13 @@ def parallel_tempering(
     if n_workers < 1:
         raise ValueError("n_workers must be at least 1.")
 
-    ladder = _temperature_ladder(system, temperatures, num_replicas)
+    ladder = _temperature_ladder(
+        system,
+        temperatures,
+        num_replicas,
+        cold_temp,
+        hot_temp,
+    )
     num_replicas = int(ladder.size)
     engine = get_engine(system.system_type)
     replicas = _make_replicas(system, engine, num_replicas, initial_states)
@@ -379,13 +462,19 @@ def parallel_tempering(
     exchange_accepts = [0 for _ in range(num_replicas - 1)]
 
     executor = None
+    shared_memory_handles: list[shared_memory.SharedMemory] = []
     if n_workers > 1 and iterations > 0:
+        neighborhood_context = system.neighborhood
+        if isinstance(system.neighborhood, NonAntipodalNeighborhoodCSR):
+            neighborhood_context, shared_memory_handles = _share_csr_neighborhood(
+                system.neighborhood
+            )
         executor = ProcessPoolExecutor(
             max_workers=min(n_workers, num_replicas),
             initializer=_init_worker_context,
             initargs=(
                 system.system_type,
-                system.neighborhood,
+                neighborhood_context,
                 system.num_spins,
                 system.antipodal,
             ),
@@ -469,6 +558,7 @@ def parallel_tempering(
     finally:
         if executor is not None:
             executor.shutdown()
+        _release_shared_memory(shared_memory_handles)
 
     _copy_replica_state(replicas[0], system)
     if track_best and best_energy > system.best_energy:
@@ -476,11 +566,24 @@ def parallel_tempering(
     elif track_best and system.best_system is None:
         _set_best(system, best_system, best_energy)
 
-    system.anneal_data.iterations += iterations
-    system.anneal_data.energies.extend(cold_energy_history)
+    for idx, energy in enumerate(cold_energy_history):
+        acceptance_rate = (
+            float(np.mean(sweep_acceptance[idx])) if sweep_acceptance[idx] else 0.0
+        )
+        system.anneal_data.iterations += 1
+        system.anneal_data.records.append(
+            AnnealRecord(
+                iteration=int(system.anneal_data.iterations),
+                temperature=float(ladder[0]),
+                steps=int(sweep_steps),
+                acceptance_rate=acceptance_rate,
+                current_energy=float(energy),
+                best_energy=float(system.best_energy),
+            )
+        )
 
-    if save:
-        system.save(system.parameters.save_dir)
+    if save_path is not None:
+        system.save(save_path)
 
     exchange_rates = [
         accepts / attempts if attempts else 0.0

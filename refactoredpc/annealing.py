@@ -1,8 +1,10 @@
 from __future__ import annotations
+from pathlib import Path
 import time
 import numpy as np
-from .core import Engine
+from .core import AnnealSchedule, Engine
 from .engines import get_engine
+from .fixed_density_numba import run_fixed_density_numba_sweep
 
 from typing import TYPE_CHECKING
 
@@ -32,21 +34,14 @@ def _require_annealable(system: "System") -> None:
         raise RuntimeError("System has no anneal_data.")
 
 
-def _validate_schedule(system: "System", save: bool = False) -> None:
-    params = system.parameters
-    data = system.anneal_data
-    if params.cooling_rate <= 0 or params.cooling_rate >= 1:
-        raise ValueError(
-            "parameters.cooling_rate must be between 0 and 1 for simulated annealing."
-        )
-    if params.max_iterations < 0:
-        raise ValueError("parameters.max_iterations must be nonnegative.")
-    if params.max_runtime < 0:
-        raise ValueError("parameters.max_runtime must be nonnegative.")
-    if data.steps <= 0:
-        raise ValueError(f"anneal_data.steps must be positive, got {data.steps!r}.")
-    if save and params.its_per_save <= 0:
-        raise ValueError("parameters.its_per_save must be positive when save=True.")
+def _validate_schedule(
+        schedule: AnnealSchedule,
+        *,
+        save_interval: int,
+) -> None:
+    schedule.validate()
+    if save_interval <= 0:
+        raise ValueError(f"save_interval must be positive, got {save_interval!r}.")
 
 
 def _recompute_energy_state(system: "System", engine: Engine) -> np.ndarray:
@@ -96,6 +91,16 @@ def metropolis_sweep(
     if n_steps <= 0:
         raise ValueError(f"n_steps must be positive, got {n_steps!r}.")
 
+    accelerated_acceptance = run_fixed_density_numba_sweep(
+        system=system,
+        energy_array=energy_array,
+        T=T,
+        n_steps=n_steps,
+        track_best=track_best,
+    )
+    if accelerated_acceptance is not None:
+        return accelerated_acceptance
+
     suggest = engine.suggest
     update = engine.update
 
@@ -136,7 +141,7 @@ def thermalize_system(
     ----------
     system : System
         System object (must have system.system_type and system.neighborhood).
-        Uses and updates system.anneal_data.temperature.
+        Uses and updates system.temperature.
     target_acceptance : float, optional
         Desired acceptance probability for SA start, by default 0.6.
     tolerance : float, optional
@@ -174,16 +179,12 @@ def thermalize_system(
     # Ensure energy_array matches current configuration
     energy_array = grid_gen(system.current_system, system.neighborhood)
 
-    # Initialize temperature if unset or invalid
-    if system.anneal_data.temperature <= 0:
-        system.anneal_data.temperature = 1.0
-
     # Clamp range for safety
     min_temp = 1e-6
     max_temp = 1e6
 
     for i in range(max_adjustments):
-        T = float(system.anneal_data.temperature)
+        T = float(system.temperature)
 
         # One probe sweep at current T (do NOT track best during thermalization)
         acceptance = metropolis_sweep(
@@ -214,30 +215,33 @@ def thermalize_system(
         T_new = float(np.exp(log_T_new))
 
         # Clamp to a sane range
-        system.anneal_data.temperature = float(
-            np.clip(T_new, min_temp, max_temp)
-        )
+        system.temperature = float(np.clip(T_new, min_temp, max_temp))
 
-    return float(system.anneal_data.temperature)
+    return float(system.temperature)
 
 
 def simulated_annealing(
         system: "System",
-        save: bool = True,
+        *,
+        schedule: AnnealSchedule,
+        save_path: str | Path | None = None,
+        save_interval: int = 1,
         verbose: bool = False,
         reinit: bool = False,
 ) -> None:
     """Main simulated annealing loop.
 
-    Uses the current system.anneal_data.temperature as starting T
+    Uses the provided schedule's starting temperature as starting T
     (you can call `thermalize_system` beforehand to tune it).
 
     Parameters
     ----------
     system : System
         System object, mutated in-place.
-    save : bool, optional
-        Whether to save, by default True.
+    save_path : str | Path | None, optional
+        If provided, save periodic and final NetCDF state to this path.
+    save_interval : int, optional
+        Save every N temperature iterations when save_path is provided.
     verbose : bool, optional
         Whether to print annealing diagnostics, by default False.
     reinit : bool, optional
@@ -245,7 +249,7 @@ def simulated_annealing(
         temperature step to correct numerical or incremental-update drift.
     """
     _require_annealable(system)
-    _validate_schedule(system, save=save)
+    _validate_schedule(schedule, save_interval=save_interval)
 
     engine = get_engine(system.system_type)
     grid_gen = engine.grid_gen
@@ -257,14 +261,18 @@ def simulated_annealing(
 
     start_time = time.time()
     acc = 1.0
+    iterations_run = 0
+    temperature = float(schedule.starting_temp)
+    steps = int(schedule.starting_steps)
     while (
-            system.anneal_data.temperature > system.parameters.final_temp
-            and system.anneal_data.iterations < system.parameters.max_iterations
-            and (time.time() - start_time) / 60 ** 2 < system.parameters.max_runtime
-            and acc > system.parameters.min_acceptance
+            temperature > schedule.final_temp
+            and iterations_run < schedule.max_iterations
+            and (time.time() - start_time) / 60 ** 2
+            < schedule.max_runtime_hours
+            and acc > schedule.min_acceptance
     ):
-        T = system.anneal_data.temperature
-        n_steps = system.anneal_data.steps
+        T = temperature
+        n_steps = steps
 
         acc = metropolis_sweep(
             system=system,
@@ -282,25 +290,30 @@ def simulated_annealing(
                 f"acceptance={acc:.4g}, "
                 f"steps={n_steps}"
             )
-        system.anneal_data.update_stats.append([T, acc])
         # Cooling schedule
 
-        system.anneal_data.steps = max(
+        steps = max(
             1,
-            int(system.anneal_data.steps / system.parameters.cooling_rate),
+            int(steps / schedule.cooling_rate),
         )
-        system.anneal_data.temperature *= system.parameters.cooling_rate
+        temperature *= schedule.cooling_rate
         system.anneal_data.iterations += 1
+        iterations_run += 1
         if reinit:
             energy_array = _recompute_energy_state(system, engine)
-        system.anneal_data.energies.append(system.current_energy)
+        system.anneal_data.append_record(
+            temperature=float(T),
+            steps=int(n_steps),
+            acceptance_rate=float(acc),
+            current_energy=float(system.current_energy),
+            best_energy=float(system.best_energy),
+        )
 
         # Periodic save
-        if save and (
-                system.anneal_data.iterations % system.parameters.its_per_save == 0
-        ):
-            system.save(system.parameters.save_dir)
+        if save_path is not None and iterations_run % save_interval == 0:
+            system.save(save_path)
 
     # Final save
-    if save:
-        system.save(system.parameters.save_dir)
+    system.temperature = max(float(temperature), 1e-12)
+    if save_path is not None:
+        system.save(save_path)

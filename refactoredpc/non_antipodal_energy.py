@@ -151,8 +151,9 @@ def generate_non_antipodal_energy_grid(
 
 def resolve_non_antipodal_update(system: "System", update: tuple[int, int]) -> tuple[int, int]:
     """Return the moving occupied and destination unoccupied site indices."""
-    if system.up_spins is None or system.down_spins is None:
-        raise RuntimeError("Non-antipodal spin lists have not been initialized.")
+    occupancy = system.occupancy
+    if occupancy is None:
+        raise RuntimeError("Non-antipodal occupancy has not been initialized.")
     if system.neighborhood is None:
         raise RuntimeError("Non-antipodal neighborhood has not been initialized.")
 
@@ -160,12 +161,13 @@ def resolve_non_antipodal_update(system: "System", update: tuple[int, int]) -> t
     if up_idx < 0 or down_idx < 0:
         raise IndexError(f"Non-antipodal update indices must be nonnegative: {update!r}.")
     try:
-        spin_up = system.up_spins[up_idx]
-        spin_down = system.down_spins[down_idx]
+        spin_up = occupancy.occupied[up_idx]
+        spin_down = occupancy.unoccupied[down_idx]
     except IndexError as exc:
         raise IndexError(
             f"Invalid non-antipodal update {update!r} for "
-            f"{len(system.up_spins)} up spins and {len(system.down_spins)} down spins."
+            f"{len(occupancy.occupied)} occupied and "
+            f"{len(occupancy.unoccupied)} unoccupied sites."
         ) from exc
 
     system_states = system.current_system
@@ -185,7 +187,42 @@ def get_non_antipodal_pair_contribution(
         target_spin: int,
 ) -> float:
     """Return the source->target contribution only if the two sites interact."""
+    target_spin = int(target_spin)
+    if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
+        source_spin = int(source_spin)
+        if source_spin < 0:
+            source_spin += len(neighborhood)
+        if source_spin < 0 or source_spin >= len(neighborhood):
+            raise IndexError(source_spin)
+        start = int(neighborhood.indptr[source_spin])
+        stop = int(neighborhood.indptr[source_spin + 1])
+        neighbor_spins = neighborhood.neighbor_spins[start:stop]
+        if neighbor_spins.size == 0:
+            return 0.0
+        left = int(np.searchsorted(neighbor_spins, target_spin, side="left"))
+        if left == neighbor_spins.size or int(neighbor_spins[left]) != target_spin:
+            return 0.0
+        right = int(np.searchsorted(neighbor_spins, target_spin, side="right"))
+        return float(neighborhood.contributions[start + left:start + right].sum())
+
     neighbors = neighborhood[source_spin]
+    if (
+            neighbors.neighbor_spins.size > 1
+            and np.all(neighbors.neighbor_spins[:-1] <= neighbors.neighbor_spins[1:])
+    ):
+        left = int(
+            np.searchsorted(neighbors.neighbor_spins, target_spin, side="left")
+        )
+        if (
+                left == neighbors.neighbor_spins.size
+                or int(neighbors.neighbor_spins[left]) != target_spin
+        ):
+            return 0.0
+        right = int(
+            np.searchsorted(neighbors.neighbor_spins, target_spin, side="right")
+        )
+        return float(neighbors.contributions[left:right].sum())
+
     matching_indices = np.flatnonzero(neighbors.neighbor_spins == target_spin)
     if matching_indices.size == 0:
         return 0.0
@@ -238,5 +275,8 @@ def update_non_antipodal_energy_grid(
         neighborhood[spin_down].contributions,
     )
     energy_grid[down_neighbors] += down_contributions
-    system.up_spins.append(system.down_spins.pop(down_idx))
-    system.down_spins.append(system.up_spins.pop(up_idx))
+    occupancy = system.occupancy
+    if occupancy is None:
+        raise RuntimeError("Non-antipodal occupancy has not been initialized.")
+    occupancy.occupied[up_idx] = spin_down
+    occupancy.unoccupied[down_idx] = spin_up

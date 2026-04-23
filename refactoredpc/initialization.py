@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from .system import System
 
 
-def build_spin_lists(system: System):
+def sync_occupancy(system: System):
     if system.current_system is None:
         raise RuntimeError("Cannot build occupancy lists before initialization.")
     system.sync_occupancy_from_spins()
@@ -28,16 +28,16 @@ def init_system(system: System):
         system.best_system = system.current_system.copy()
         system.best_energy = system.current_energy
     if not system.antipodal:
-        build_spin_lists(system)
+        sync_occupancy(system)
 
 
 def init_random(system: System):
     if system.system_type in (SystemType.NON_ANTIPODAL, SystemType.EUCLIDEAN):
         all_spins = np.arange(len(system.grid))
         idx = np.random.choice(len(all_spins), size=system.num_spins, replace=False)
-        up_spins = all_spins[idx].tolist()
+        occupied_sites = all_spins[idx].tolist()
         system.current_system = np.zeros(len(system.grid), dtype=bool)
-        system.current_system[up_spins] = True
+        system.current_system[occupied_sites] = True
     else:
         system.current_system = np.random.randint(
             2, size=system.system_shape, dtype="bool"
