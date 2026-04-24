@@ -74,7 +74,7 @@ def greedy_optimization(
     if min_delta < 0:
         raise ValueError(f"min_delta must be nonnegative, got {min_delta!r}.")
 
-    engine = get_engine(system.system_type)
+    engine = get_engine(system.config)
     best_update = engine.best_update
     update = engine.update
 
@@ -126,6 +126,14 @@ def greedy_optimization(
                 f"[greedy] step={steps}, dE={dE:.6g}, "
                 f"energy={system.current_energy:.6g}"
             )
+
+    system.greedy_history.append_result(
+        steps=int(steps),
+        current_energy=float(system.current_energy),
+        best_energy=float(system.best_energy),
+        last_delta=last_delta,
+        converged=converged,
+    )
 
     return GreedyResult(
         steps=steps,

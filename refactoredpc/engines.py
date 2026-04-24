@@ -1,7 +1,7 @@
 from __future__ import annotations
 from numpy.typing import NDArray
 import numpy as np
-from .core import Engine, SystemType
+from .core import ConstraintModel, Engine, InteractionModel, SystemConfig, UpdateRule
 from .inverse_energy import (
     generate_energy_grid,
     update_energy_grid,
@@ -134,26 +134,32 @@ NONANTIPODAL_ENGINE = Engine(
     best_update=OCCUPANCY_ENGINE.best_update,
 )
 
-EUCLIDEAN_ENGINE = Engine(
-    mode="euclidean",
-    energy=OCCUPANCY_ENGINE.energy,
-    grid_gen=OCCUPANCY_ENGINE.grid_gen,
-    update=OCCUPANCY_ENGINE.update,
-    suggest=OCCUPANCY_ENGINE.suggest,
-    best_update=OCCUPANCY_ENGINE.best_update,
-)
-
-ENGINE_BY_TYPE = {
-    SystemType.INVERSE: INVERSE_ENGINE,
-    SystemType.INDEPENDENT: INDEPENDENT_ENGINE,
-    SystemType.NON_ANTIPODAL: NONANTIPODAL_ENGINE,
-    SystemType.EUCLIDEAN: EUCLIDEAN_ENGINE,
+ENGINE_BY_CONFIG_KEY = {
+    (
+        ConstraintModel.ANTIPODAL,
+        InteractionModel.INVERSE,
+        UpdateRule.FLIP,
+    ): INVERSE_ENGINE,
+    (
+        ConstraintModel.INDEPENDENT,
+        InteractionModel.INDEPENDENT,
+        UpdateRule.FLIP,
+    ): INDEPENDENT_ENGINE,
+    (
+        ConstraintModel.FIXED_DENSITY,
+        InteractionModel.OCCUPANCY,
+        UpdateRule.SWAP,
+    ): OCCUPANCY_ENGINE,
 }
 
-ENGINES = {system_type.value: engine for system_type, engine in ENGINE_BY_TYPE.items()}
 
-
-def get_engine(system_type: SystemType | str) -> Engine:
-    if isinstance(system_type, str):
-        system_type = SystemType(system_type.lower().replace("_", "-"))
-    return ENGINE_BY_TYPE[system_type]
+def get_engine(config: SystemConfig) -> Engine:
+    key = (
+        config.constraint,
+        config.interaction_model,
+        config.update_rule,
+    )
+    try:
+        return ENGINE_BY_CONFIG_KEY[key]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported engine config: {config!r}.") from exc

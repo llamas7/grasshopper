@@ -6,7 +6,35 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-@dataclass
+def _normalize_sparse_row(
+    indices,
+    values,
+    *,
+    index_name: str,
+    value_name: str,
+) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+    normalized_indices = np.asarray(indices, dtype=np.int64)
+    normalized_values = np.asarray(values, dtype=np.float64)
+    if normalized_indices.ndim != 1:
+        raise ValueError(f"{index_name} must be one-dimensional, got {normalized_indices.shape}.")
+    if normalized_values.ndim != 1:
+        raise ValueError(f"{value_name} must be one-dimensional, got {normalized_values.shape}.")
+    if normalized_indices.shape != normalized_values.shape:
+        raise ValueError(
+            f"{index_name} and {value_name} must have matching shapes, "
+            f"got {normalized_indices.shape} and {normalized_values.shape}."
+        )
+    if normalized_indices.size > 1:
+        order = np.argsort(normalized_indices, kind="stable")
+        normalized_indices = normalized_indices[order]
+        normalized_values = normalized_values[order]
+    return (
+        np.ascontiguousarray(normalized_indices, dtype=np.int64),
+        np.ascontiguousarray(normalized_values, dtype=np.float64),
+    )
+
+
+@dataclass(frozen=True)
 class Neighborhood:
     positive_spins: NDArray[np.int_]
     positive_contributions: NDArray[np.float64]
@@ -14,12 +42,45 @@ class Neighborhood:
     negative_contributions: NDArray[np.float64]
     spin_potential: float
 
+    def __post_init__(self) -> None:
+        positive_spins, positive_contributions = _normalize_sparse_row(
+            self.positive_spins,
+            self.positive_contributions,
+            index_name="positive_spins",
+            value_name="positive_contributions",
+        )
+        negative_spins, negative_contributions = _normalize_sparse_row(
+            self.negative_spins,
+            self.negative_contributions,
+            index_name="negative_spins",
+            value_name="negative_contributions",
+        )
+        object.__setattr__(self, "positive_spins", positive_spins)
+        object.__setattr__(self, "positive_contributions", positive_contributions)
+        object.__setattr__(self, "negative_spins", negative_spins)
+        object.__setattr__(self, "negative_contributions", negative_contributions)
+        object.__setattr__(self, "spin_potential", float(self.spin_potential))
 
-@dataclass
+
+@dataclass(frozen=True)
 class NonAntipodalNeighborhood:
     neighbor_spins: NDArray[np.int_]
     contributions: NDArray[np.float64]
     spin_potential: float
+
+    def __post_init__(self) -> None:
+        neighbor_spins, contributions = _normalize_sparse_row(
+            self.neighbor_spins,
+            self.contributions,
+            index_name="neighbor_spins",
+            value_name="contributions",
+        )
+        object.__setattr__(self, "neighbor_spins", neighbor_spins)
+        object.__setattr__(self, "contributions", contributions)
+        object.__setattr__(self, "spin_potential", float(self.spin_potential))
+
+    def __len__(self) -> int:
+        return int(self.neighbor_spins.size)
 
 
 @dataclass(frozen=True)
@@ -40,24 +101,15 @@ class NonAntipodalNeighborhoodCSR:
         cls,
         rows: list[NonAntipodalNeighborhood],
     ) -> "NonAntipodalNeighborhoodCSR":
-        sorted_neighbor_rows: list[NDArray[np.int64]] = []
-        sorted_contribution_rows: list[NDArray[np.float64]] = []
-        for row in rows:
-            neighbor_row = np.asarray(row.neighbor_spins, dtype=np.int64)
-            contribution_row = np.asarray(row.contributions, dtype=np.float64)
-            if neighbor_row.shape != contribution_row.shape:
-                raise ValueError(
-                    "neighbor_spins and contributions must have matching shapes."
-                )
-            if neighbor_row.size > 1:
-                order = np.argsort(neighbor_row, kind="stable")
-                neighbor_row = neighbor_row[order]
-                contribution_row = contribution_row[order]
-            sorted_neighbor_rows.append(np.ascontiguousarray(neighbor_row))
-            sorted_contribution_rows.append(np.ascontiguousarray(contribution_row))
+        neighbor_rows = [
+            np.ascontiguousarray(row.neighbor_spins, dtype=np.int64) for row in rows
+        ]
+        contribution_rows = [
+            np.ascontiguousarray(row.contributions, dtype=np.float64) for row in rows
+        ]
 
         lengths = np.fromiter(
-            (len(row) for row in sorted_neighbor_rows),
+            (row.neighbor_spins.size for row in rows),
             count=len(rows),
             dtype=np.int64,
         )
@@ -68,11 +120,11 @@ class NonAntipodalNeighborhoodCSR:
             neighbor_spins = np.array([], dtype=np.int64)
             contributions = np.array([], dtype=np.float64)
         else:
-            neighbor_spins = np.concatenate(sorted_neighbor_rows).astype(
+            neighbor_spins = np.concatenate(neighbor_rows).astype(
                 np.int64,
                 copy=False,
             )
-            contributions = np.concatenate(sorted_contribution_rows).astype(
+            contributions = np.concatenate(contribution_rows).astype(
                 np.float64, copy=False
             )
         spin_potential = np.asarray(
@@ -310,12 +362,219 @@ class AnnealData:
             )
         )
 
+    def copy(self) -> "AnnealData":
+        return AnnealData(
+            iterations=int(self.iterations),
+            records=list(self.records),
+        )
+
+
+@dataclass(frozen=True)
+class GreedyRecord:
+    run: int
+    steps: int
+    current_energy: float
+    best_energy: float
+    last_delta: float | None
+    converged: bool
+
+
+@dataclass
+class GreedyHistory:
+    runs: int = 0
+    records: list[GreedyRecord] = field(default_factory=list)
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "GreedyHistory":
+        if not data:
+            return cls()
+
+        records: list[GreedyRecord] = []
+        for record in data.get("records", []) or []:
+            if isinstance(record, GreedyRecord):
+                records.append(record)
+            elif isinstance(record, dict):
+                records.append(GreedyRecord(**record))
+
+        return cls(
+            runs=int(data.get("runs", len(records))),
+            records=records,
+        )
+
+    def append_result(
+        self,
+        *,
+        steps: int,
+        current_energy: float,
+        best_energy: float,
+        last_delta: float | None,
+        converged: bool,
+    ) -> None:
+        self.runs += 1
+        self.records.append(
+            GreedyRecord(
+                run=int(self.runs),
+                steps=int(steps),
+                current_energy=float(current_energy),
+                best_energy=float(best_energy),
+                last_delta=None if last_delta is None else float(last_delta),
+                converged=bool(converged),
+            )
+        )
+
+    def copy(self) -> "GreedyHistory":
+        return GreedyHistory(
+            runs=int(self.runs),
+            records=list(self.records),
+        )
+
+
+@dataclass(frozen=True)
+class ParallelTemperingRecord:
+    run: int
+    iterations: int
+    temperatures: tuple[float, ...]
+    best_energy: float
+    cold_energy: float
+    final_energies: tuple[float, ...]
+    cold_energy_history: tuple[float, ...]
+    sweep_acceptance: tuple[tuple[float, ...], ...]
+    exchange_attempts: tuple[int, ...]
+    exchange_accepts: tuple[int, ...]
+    exchange_rates: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "run", int(self.run))
+        object.__setattr__(self, "iterations", int(self.iterations))
+        object.__setattr__(
+            self,
+            "temperatures",
+            tuple(float(value) for value in self.temperatures),
+        )
+        object.__setattr__(self, "best_energy", float(self.best_energy))
+        object.__setattr__(self, "cold_energy", float(self.cold_energy))
+        object.__setattr__(
+            self,
+            "final_energies",
+            tuple(float(value) for value in self.final_energies),
+        )
+        object.__setattr__(
+            self,
+            "cold_energy_history",
+            tuple(float(value) for value in self.cold_energy_history),
+        )
+        object.__setattr__(
+            self,
+            "sweep_acceptance",
+            tuple(
+                tuple(float(value) for value in iteration)
+                for iteration in self.sweep_acceptance
+            ),
+        )
+        object.__setattr__(
+            self,
+            "exchange_attempts",
+            tuple(int(value) for value in self.exchange_attempts),
+        )
+        object.__setattr__(
+            self,
+            "exchange_accepts",
+            tuple(int(value) for value in self.exchange_accepts),
+        )
+        object.__setattr__(
+            self,
+            "exchange_rates",
+            tuple(float(value) for value in self.exchange_rates),
+        )
+
+
+@dataclass
+class ParallelTemperingHistory:
+    runs: int = 0
+    records: list[ParallelTemperingRecord] = field(default_factory=list)
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any] | None) -> "ParallelTemperingHistory":
+        if not data:
+            return cls()
+
+        records: list[ParallelTemperingRecord] = []
+        for record in data.get("records", []) or []:
+            if isinstance(record, ParallelTemperingRecord):
+                records.append(record)
+            elif isinstance(record, dict):
+                records.append(ParallelTemperingRecord(**record))
+
+        return cls(
+            runs=int(data.get("runs", len(records))),
+            records=records,
+        )
+
+    def append_run(
+        self,
+        *,
+        iterations: int,
+        temperatures,
+        best_energy: float,
+        cold_energy: float,
+        final_energies,
+        cold_energy_history,
+        sweep_acceptance,
+        exchange_attempts,
+        exchange_accepts,
+        exchange_rates,
+    ) -> None:
+        self.runs += 1
+        self.records.append(
+            ParallelTemperingRecord(
+                run=int(self.runs),
+                iterations=int(iterations),
+                temperatures=tuple(temperatures),
+                best_energy=float(best_energy),
+                cold_energy=float(cold_energy),
+                final_energies=tuple(final_energies),
+                cold_energy_history=tuple(cold_energy_history),
+                sweep_acceptance=tuple(tuple(iteration) for iteration in sweep_acceptance),
+                exchange_attempts=tuple(exchange_attempts),
+                exchange_accepts=tuple(exchange_accepts),
+                exchange_rates=tuple(exchange_rates),
+            )
+        )
+
+    def copy(self) -> "ParallelTemperingHistory":
+        return ParallelTemperingHistory(
+            runs=int(self.runs),
+            records=list(self.records),
+        )
+
 
 class SystemType(str, Enum):
     INVERSE = "inverse"
     INDEPENDENT = "independent"
     NON_ANTIPODAL = "non-antipodal"
     EUCLIDEAN = "euclidean"
+
+
+class Geometry(str, Enum):
+    SPHERICAL = "spherical"
+    EUCLIDEAN = "euclidean"
+
+
+class ConstraintModel(str, Enum):
+    ANTIPODAL = "antipodal"
+    INDEPENDENT = "independent"
+    FIXED_DENSITY = "fixed-density"
+
+
+class InteractionModel(str, Enum):
+    INVERSE = "inverse"
+    INDEPENDENT = "independent"
+    OCCUPANCY = "occupancy"
+
+
+class UpdateRule(str, Enum):
+    FLIP = "flip"
+    SWAP = "swap"
 
 
 class DeltaType(str, Enum):
@@ -329,3 +588,219 @@ class DeltaType(str, Enum):
     REAL_DELTA = "real_delta"
     DELTA = "delta"
     DIRAC = "dirac"
+
+
+@dataclass(frozen=True)
+class SystemConfig:
+    """Orthogonal system description independent of legacy system labels."""
+
+    geometry: Geometry
+    constraint: ConstraintModel
+    interaction_model: InteractionModel
+    update_rule: UpdateRule
+
+    def __post_init__(self) -> None:
+        supported = {
+            (
+                Geometry.SPHERICAL,
+                ConstraintModel.ANTIPODAL,
+                InteractionModel.INVERSE,
+                UpdateRule.FLIP,
+            ),
+            (
+                Geometry.SPHERICAL,
+                ConstraintModel.INDEPENDENT,
+                InteractionModel.INDEPENDENT,
+                UpdateRule.FLIP,
+            ),
+            (
+                Geometry.SPHERICAL,
+                ConstraintModel.FIXED_DENSITY,
+                InteractionModel.OCCUPANCY,
+                UpdateRule.SWAP,
+            ),
+            (
+                Geometry.EUCLIDEAN,
+                ConstraintModel.FIXED_DENSITY,
+                InteractionModel.OCCUPANCY,
+                UpdateRule.SWAP,
+            ),
+        }
+        key = (
+            self.geometry,
+            self.constraint,
+            self.interaction_model,
+            self.update_rule,
+        )
+        if key not in supported:
+            raise ValueError(
+                "Unsupported system configuration: "
+                f"geometry={self.geometry.value}, "
+                f"constraint={self.constraint.value}, "
+                f"interaction_model={self.interaction_model.value}, "
+                f"update_rule={self.update_rule.value}."
+            )
+
+    @property
+    def antipodal(self) -> bool:
+        return self.constraint in (
+            ConstraintModel.ANTIPODAL,
+            ConstraintModel.INDEPENDENT,
+        )
+
+
+LEGACY_SYSTEM_TYPE_TO_CONFIG: dict[SystemType, SystemConfig] = {
+    SystemType.INVERSE: SystemConfig(
+        geometry=Geometry.SPHERICAL,
+        constraint=ConstraintModel.ANTIPODAL,
+        interaction_model=InteractionModel.INVERSE,
+        update_rule=UpdateRule.FLIP,
+    ),
+    SystemType.INDEPENDENT: SystemConfig(
+        geometry=Geometry.SPHERICAL,
+        constraint=ConstraintModel.INDEPENDENT,
+        interaction_model=InteractionModel.INDEPENDENT,
+        update_rule=UpdateRule.FLIP,
+    ),
+    SystemType.NON_ANTIPODAL: SystemConfig(
+        geometry=Geometry.SPHERICAL,
+        constraint=ConstraintModel.FIXED_DENSITY,
+        interaction_model=InteractionModel.OCCUPANCY,
+        update_rule=UpdateRule.SWAP,
+    ),
+    SystemType.EUCLIDEAN: SystemConfig(
+        geometry=Geometry.EUCLIDEAN,
+        constraint=ConstraintModel.FIXED_DENSITY,
+        interaction_model=InteractionModel.OCCUPANCY,
+        update_rule=UpdateRule.SWAP,
+    ),
+}
+
+CONFIG_TO_LEGACY_SYSTEM_TYPE: dict[SystemConfig, SystemType] = {
+    config: system_type
+    for system_type, config in LEGACY_SYSTEM_TYPE_TO_CONFIG.items()
+}
+
+
+def config_from_system_type(system_type: SystemType | str) -> SystemConfig:
+    if isinstance(system_type, str):
+        system_type = SystemType(system_type.lower().replace("_", "-"))
+    return LEGACY_SYSTEM_TYPE_TO_CONFIG[system_type]
+
+
+def system_type_from_config(config: SystemConfig) -> SystemType:
+    try:
+        return CONFIG_TO_LEGACY_SYSTEM_TYPE[config]
+    except KeyError as exc:
+        raise ValueError(
+            "No legacy SystemType exists for configuration "
+            f"{config!r}."
+        ) from exc
+
+
+@dataclass
+class SystemDefinition:
+    """Static system metadata derived at construction time."""
+
+    grid: NDArray[np.float64]
+    config: SystemConfig
+    num_spins: int
+    dimension: int
+    system_shape: int | tuple[int, ...] | None
+
+    @property
+    def site_count(self) -> int:
+        return int(self.grid.shape[0])
+
+    @property
+    def geometry(self) -> Geometry:
+        return self.config.geometry
+
+    @property
+    def constraint(self) -> ConstraintModel:
+        return self.config.constraint
+
+    @property
+    def interaction_model(self) -> InteractionModel:
+        return self.config.interaction_model
+
+    @property
+    def update_rule(self) -> UpdateRule:
+        return self.config.update_rule
+
+    @property
+    def antipodal(self) -> bool:
+        return self.config.antipodal
+
+    @property
+    def system_type(self) -> SystemType:
+        return system_type_from_config(self.config)
+
+
+@dataclass
+class NeighborhoodModel:
+    """Neighborhood configuration plus cached derived structures."""
+
+    delta: DeltaType
+    jump_distance: float | None = None
+    neighborhood: NeighborhoodData | None = None
+    prob_prefactor: float = 0.0
+
+
+@dataclass
+class OptimizationRuntime:
+    """Mutable optimization state owned by a system instance."""
+
+    initialized: bool = False
+    current_system: NDArray[np.bool_] | None = None
+    current_energy: float = 0.0
+    best_system: NDArray[np.bool_] | None = None
+    best_energy: float = 0.0
+    anneal_data: AnnealData = field(default_factory=AnnealData)
+    greedy_history: GreedyHistory = field(default_factory=GreedyHistory)
+    parallel_tempering_history: ParallelTemperingHistory = field(
+        default_factory=ParallelTemperingHistory
+    )
+    occupancy: OccupancyState | None = None
+    temperature: float = field(
+        default_factory=lambda: float(AnnealSchedule().starting_temp)
+    )
+
+    def snapshot_state(self) -> SystemState:
+        return SystemState(
+            current_system=(
+                None if self.current_system is None else self.current_system.copy()
+            ),
+            current_energy=float(self.current_energy),
+            best_system=None if self.best_system is None else self.best_system.copy(),
+            best_energy=float(self.best_energy),
+            occupancy=None if self.occupancy is None else self.occupancy.copy(),
+        )
+
+    def restore_state(self, state: SystemState) -> None:
+        self.current_system = (
+            None if state.current_system is None else state.current_system.copy()
+        )
+        self.current_energy = float(state.current_energy)
+        self.best_system = (
+            None if state.best_system is None else state.best_system.copy()
+        )
+        self.best_energy = float(state.best_energy)
+        self.occupancy = None if state.occupancy is None else state.occupancy.copy()
+
+    def copy(self) -> "OptimizationRuntime":
+        copied = OptimizationRuntime(
+            initialized=bool(self.initialized),
+            current_system=(
+                None if self.current_system is None else self.current_system.copy()
+            ),
+            current_energy=float(self.current_energy),
+            best_system=None if self.best_system is None else self.best_system.copy(),
+            best_energy=float(self.best_energy),
+            anneal_data=self.anneal_data.copy(),
+            greedy_history=self.greedy_history.copy(),
+            parallel_tempering_history=self.parallel_tempering_history.copy(),
+            occupancy=None if self.occupancy is None else self.occupancy.copy(),
+            temperature=float(self.temperature),
+        )
+        return copied

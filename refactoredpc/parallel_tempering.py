@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import copy
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from multiprocessing import shared_memory
@@ -11,13 +9,14 @@ import numpy as np
 
 from .annealing import metropolis_sweep
 from .core import (
-    AnnealRecord,
     Engine,
     NonAntipodalNeighborhoodCSR,
     OccupancyState,
+    SystemConfig,
 )
 from .engines import get_engine
 from .initialization import init_from_array, init_random, sync_occupancy
+from .spinflip_numba import compute_spinflip_numba_energy_grid
 
 if TYPE_CHECKING:
     from .system import System
@@ -56,7 +55,7 @@ class ParallelTemperingResult:
 
 @dataclass
 class _WorkerSystem:
-    system_type: Any
+    config: SystemConfig
     neighborhood: Any
     num_spins: int
     antipodal: bool
@@ -176,7 +175,7 @@ def _release_shared_memory(handles: list[shared_memory.SharedMemory]) -> None:
 
 
 def _init_worker_context(
-        system_type: Any,
+        config: SystemConfig,
         neighborhood_context: Any,
         num_spins: int,
         antipodal: bool,
@@ -184,7 +183,7 @@ def _init_worker_context(
     global _WORKER_CONTEXT
     neighborhood, shared_handles = _attach_worker_neighborhood(neighborhood_context)
     _WORKER_CONTEXT = {
-        "system_type": system_type,
+        "config": config,
         "neighborhood": neighborhood,
         "num_spins": int(num_spins),
         "antipodal": bool(antipodal),
@@ -199,8 +198,6 @@ def _require_parallel_tempering_ready(system: "System") -> None:
         raise RuntimeError("System has no best spin state. Initialize it first.")
     if system.neighborhood is None:
         raise RuntimeError("System has no neighborhood. Call compute_neighborhood() first.")
-    if system.anneal_data is None:
-        raise RuntimeError("System has no anneal_data.")
 
 
 def _temperature_ladder(
@@ -233,7 +230,7 @@ def _temperature_ladder(
 
 
 def _clone_replica(system: "System") -> "System":
-    replica = copy.copy(system)
+    replica = system.clone()
     replica.current_system = system.current_system.copy()
     replica.best_system = system.current_system.copy()
     replica.current_energy = float(system.current_energy)
@@ -280,10 +277,18 @@ def _make_replicas(
 
 
 def _recompute_replica(replica: "System", engine: Engine) -> np.ndarray:
-    energy_grid = engine.grid_gen(replica.current_system, replica.neighborhood)
-    replica.current_energy = float(
-        engine.energy(replica.current_system, replica.neighborhood)
+    accelerated = compute_spinflip_numba_energy_grid(
+        replica.current_system,
+        replica.neighborhood,
     )
+    if accelerated is not None:
+        energy_grid, current_energy = accelerated
+        replica.current_energy = float(current_energy)
+    else:
+        energy_grid = engine.grid_gen(replica.current_system, replica.neighborhood)
+        replica.current_energy = float(
+            engine.energy(replica.current_system, replica.neighborhood)
+        )
     if not replica.antipodal:
         sync_occupancy(replica)
     return energy_grid
@@ -330,7 +335,7 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
         np.random.seed(task.seed)
 
     system = _WorkerSystem(
-        system_type=_WORKER_CONTEXT["system_type"],
+        config=_WORKER_CONTEXT["config"],
         neighborhood=_WORKER_CONTEXT["neighborhood"],
         num_spins=_WORKER_CONTEXT["num_spins"],
         antipodal=_WORKER_CONTEXT["antipodal"],
@@ -341,7 +346,7 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
         occupancy=None if task.occupancy is None else task.occupancy.copy(),
     )
     energy_grid = task.energy_grid.copy()
-    engine = get_engine(system.system_type)
+    engine = get_engine(system.config)
     acceptance = metropolis_sweep(
         system=system,
         energy_array=energy_grid,
@@ -351,10 +356,18 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
         track_best=False,
     )
     if task.reinit:
-        energy_grid = engine.grid_gen(system.current_system, system.neighborhood)
-        system.current_energy = float(
-            engine.energy(system.current_system, system.neighborhood)
+        accelerated = compute_spinflip_numba_energy_grid(
+            system.current_system,
+            system.neighborhood,
         )
+        if accelerated is not None:
+            energy_grid, current_energy = accelerated
+            system.current_energy = float(current_energy)
+        else:
+            energy_grid = engine.grid_gen(system.current_system, system.neighborhood)
+            system.current_energy = float(
+                engine.energy(system.current_system, system.neighborhood)
+            )
         if not system.antipodal:
             _sync_worker_occupancy(system)
 
@@ -445,7 +458,7 @@ def parallel_tempering(
         hot_temp,
     )
     num_replicas = int(ladder.size)
-    engine = get_engine(system.system_type)
+    engine = get_engine(system.config)
     replicas = _make_replicas(system, engine, num_replicas, initial_states)
     energy_grids = [_recompute_replica(replica, engine) for replica in replicas]
 
@@ -473,7 +486,7 @@ def parallel_tempering(
             max_workers=min(n_workers, num_replicas),
             initializer=_init_worker_context,
             initargs=(
-                system.system_type,
+                system.config,
                 neighborhood_context,
                 system.num_spins,
                 system.antipodal,
@@ -566,29 +579,26 @@ def parallel_tempering(
     elif track_best and system.best_system is None:
         _set_best(system, best_system, best_energy)
 
-    for idx, energy in enumerate(cold_energy_history):
-        acceptance_rate = (
-            float(np.mean(sweep_acceptance[idx])) if sweep_acceptance[idx] else 0.0
-        )
-        system.anneal_data.iterations += 1
-        system.anneal_data.records.append(
-            AnnealRecord(
-                iteration=int(system.anneal_data.iterations),
-                temperature=float(ladder[0]),
-                steps=int(sweep_steps),
-                acceptance_rate=acceptance_rate,
-                current_energy=float(energy),
-                best_energy=float(system.best_energy),
-            )
-        )
-
-    if save_path is not None:
-        system.save(save_path)
-
     exchange_rates = [
         accepts / attempts if attempts else 0.0
         for accepts, attempts in zip(exchange_accepts, exchange_attempts)
     ]
+    system.parallel_tempering_history.append_run(
+        iterations=int(iterations),
+        temperatures=ladder,
+        best_energy=float(system.best_energy if track_best else best_energy),
+        cold_energy=float(replicas[0].current_energy),
+        final_energies=[float(replica.current_energy) for replica in replicas],
+        cold_energy_history=cold_energy_history,
+        sweep_acceptance=sweep_acceptance,
+        exchange_attempts=exchange_attempts,
+        exchange_accepts=exchange_accepts,
+        exchange_rates=exchange_rates,
+    )
+
+    if save_path is not None:
+        system.save(save_path)
+
     return ParallelTemperingResult(
         iterations=iterations,
         temperatures=ladder,

@@ -5,6 +5,10 @@ import numpy as np
 from .core import AnnealSchedule, Engine
 from .engines import get_engine
 from .fixed_density_numba import run_fixed_density_numba_sweep
+from .spinflip_numba import (
+    compute_spinflip_numba_energy_grid,
+    run_spinflip_numba_sweep,
+)
 
 from typing import TYPE_CHECKING
 
@@ -46,6 +50,24 @@ def _validate_schedule(
 
 def _recompute_energy_state(system: "System", engine: Engine) -> np.ndarray:
     """Rebuild the incremental energy grid and exact scalar energies."""
+    accelerated_current = compute_spinflip_numba_energy_grid(
+        system.current_system,
+        system.neighborhood,
+    )
+    accelerated_best = compute_spinflip_numba_energy_grid(
+        system.best_system,
+        system.neighborhood,
+    )
+    if accelerated_current is not None and accelerated_best is not None:
+        energy_array, current_energy = accelerated_current
+        _, best_energy = accelerated_best
+        system.current_energy = float(current_energy)
+        system.best_energy = float(best_energy)
+        if system.current_energy > system.best_energy:
+            system.best_energy = system.current_energy
+            system.best_system = system.current_system.copy()
+        return energy_array
+
     grid_gen = engine.grid_gen
     system_energy_fn = engine.energy
     energy_array = grid_gen(system.current_system, system.neighborhood)
@@ -78,7 +100,7 @@ def metropolis_sweep(
     n_steps : int
         Number of MC steps.
     engine : Engine
-        Engine for this system_type.
+        Engine for this system configuration.
     track_best : bool, optional
         If True, updates system.best_system / best_energy.
 
@@ -92,6 +114,16 @@ def metropolis_sweep(
         raise ValueError(f"n_steps must be positive, got {n_steps!r}.")
 
     accelerated_acceptance = run_fixed_density_numba_sweep(
+        system=system,
+        energy_array=energy_array,
+        T=T,
+        n_steps=n_steps,
+        track_best=track_best,
+    )
+    if accelerated_acceptance is not None:
+        return accelerated_acceptance
+
+    accelerated_acceptance = run_spinflip_numba_sweep(
         system=system,
         energy_array=energy_array,
         T=T,
@@ -140,7 +172,7 @@ def thermalize_system(
     Parameters
     ----------
     system : System
-        System object (must have system.system_type and system.neighborhood).
+        System object (must have system.config and system.neighborhood).
         Uses and updates system.temperature.
     target_acceptance : float, optional
         Desired acceptance probability for SA start, by default 0.6.
@@ -173,11 +205,19 @@ def thermalize_system(
     if tolerance < 0:
         raise ValueError(f"tolerance must be nonnegative, got {tolerance!r}.")
 
-    engine = get_engine(system.system_type)
+    engine = get_engine(system.config)
     grid_gen = engine.grid_gen
 
     # Ensure energy_array matches current configuration
-    energy_array = grid_gen(system.current_system, system.neighborhood)
+    accelerated_energy = compute_spinflip_numba_energy_grid(
+        system.current_system,
+        system.neighborhood,
+    )
+    energy_array = (
+        accelerated_energy[0]
+        if accelerated_energy is not None
+        else grid_gen(system.current_system, system.neighborhood)
+    )
 
     # Clamp range for safety
     min_temp = 1e-6
@@ -251,18 +291,28 @@ def simulated_annealing(
     _require_annealable(system)
     _validate_schedule(schedule, save_interval=save_interval)
 
-    engine = get_engine(system.system_type)
+    engine = get_engine(system.config)
     grid_gen = engine.grid_gen
 
     # Build initial energy grid consistent with current_system
-    energy_array = _recompute_energy_state(system, engine) if reinit else grid_gen(
-        system.current_system, system.neighborhood
-    )
+    if reinit:
+        energy_array = _recompute_energy_state(system, engine)
+    else:
+        accelerated_energy = compute_spinflip_numba_energy_grid(
+            system.current_system,
+            system.neighborhood,
+        )
+        energy_array = (
+            accelerated_energy[0]
+            if accelerated_energy is not None
+            else grid_gen(system.current_system, system.neighborhood)
+        )
 
     start_time = time.time()
     acc = 1.0
     iterations_run = 0
     temperature = float(schedule.starting_temp)
+    system.temperature = max(float(temperature), 1e-12)
     steps = int(schedule.starting_steps)
     while (
             temperature > schedule.final_temp
@@ -297,6 +347,7 @@ def simulated_annealing(
             int(steps / schedule.cooling_rate),
         )
         temperature *= schedule.cooling_rate
+        system.temperature = max(float(temperature), 1e-12)
         system.anneal_data.iterations += 1
         iterations_run += 1
         if reinit:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from .core import SystemType
+from .core import SystemConfig, SystemType, system_type_from_config
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -363,9 +363,11 @@ def graph_euclidean_system(
 
 
 def plot_spin_system(
-        system_type: str | SystemType,
-        grid_points: NDArray[np.float64],
-        spin_states: NDArray[np.bool_],
+        system_type: str | SystemType | None = None,
+        grid_points: NDArray[np.float64] | None = None,
+        spin_states: NDArray[np.bool_] | None = None,
+        *,
+        system_config: SystemConfig | None = None,
         fig_title: str = "",
         rotate: bool = False,
         plot_figure: bool = True,
@@ -376,7 +378,26 @@ def plot_spin_system(
       - 'INDEPENDENT'   → two spins [A,B], antipodal
       - 'NONANTIPODAL'  → single spin, no antipodal
     """
-    st = SystemType(system_type)
+    if system_type is not None and not isinstance(system_type, (str, SystemType)):
+        grid_points, spin_states, system_type = (
+            system_type,
+            grid_points,
+            spin_states if isinstance(spin_states, (str, SystemType)) else None,
+        )
+
+    if grid_points is None or spin_states is None:
+        raise ValueError("plot_spin_system requires grid_points and spin_states.")
+
+    if system_config is not None:
+        if system_type is not None:
+            raise ValueError(
+                "Pass either system_config=... or system_type=..., not both."
+            )
+        st = system_type_from_config(system_config)
+    elif system_type is not None:
+        st = SystemType(system_type)
+    else:
+        raise ValueError("plot_spin_system requires system_config or system_type.")
 
     if st is SystemType.INVERSE:
         return graph_system(
