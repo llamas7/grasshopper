@@ -1,0 +1,12 @@
+numpy>=1.26
+scipy>=1.11
+xarray>=2024.1
+pandas>=2.1
+plotly>=5.18
+matplotlib>=3.8
+tqdm>=4.66
+numba>=0.65
+
+# Optional GPU acceleration for refactoredpc/build_neighbors_gpu.py.
+# Install a CUDA-matched CuPy build, for example:
+# cupy-cuda12x
