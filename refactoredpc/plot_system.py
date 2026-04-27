@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from .core import SystemConfig, SystemType, system_type_from_config
+from .core import ConstraintModel, Geometry, SystemConfig
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -363,11 +363,10 @@ def graph_euclidean_system(
 
 
 def plot_spin_system(
-        system_type: str | SystemType | None = None,
-        grid_points: NDArray[np.float64] | None = None,
-        spin_states: NDArray[np.bool_] | None = None,
         *,
-        system_config: SystemConfig | None = None,
+        system_config: SystemConfig,
+        grid_points: NDArray[np.float64],
+        spin_states: NDArray[np.bool_],
         fig_title: str = "",
         rotate: bool = False,
         plot_figure: bool = True,
@@ -378,28 +377,24 @@ def plot_spin_system(
       - 'INDEPENDENT'   → two spins [A,B], antipodal
       - 'NONANTIPODAL'  → single spin, no antipodal
     """
-    if system_type is not None and not isinstance(system_type, (str, SystemType)):
-        grid_points, spin_states, system_type = (
-            system_type,
+    if system_config.geometry == Geometry.EUCLIDEAN:
+        return graph_euclidean_system(
             grid_points,
-            spin_states if isinstance(spin_states, (str, SystemType)) else None,
+            spin_states,
+            fig_title=fig_title,
+            plot_figure=plot_figure,
         )
 
-    if grid_points is None or spin_states is None:
-        raise ValueError("plot_spin_system requires grid_points and spin_states.")
+    if system_config.constraint == ConstraintModel.INDEPENDENT:
+        return graph_independent_system(
+            grid_points,
+            spin_states,
+            fig_title=fig_title,
+            rotate=rotate,
+            plot_figure=plot_figure,
+        )
 
-    if system_config is not None:
-        if system_type is not None:
-            raise ValueError(
-                "Pass either system_config=... or system_type=..., not both."
-            )
-        st = system_type_from_config(system_config)
-    elif system_type is not None:
-        st = SystemType(system_type)
-    else:
-        raise ValueError("plot_spin_system requires system_config or system_type.")
-
-    if st is SystemType.INVERSE:
+    if system_config.antipodal:
         return graph_system(
             grid_points,
             spin_states,
@@ -409,34 +404,14 @@ def plot_spin_system(
             plot_figure=plot_figure,
         )
 
-    if st is SystemType.INDEPENDENT:
-        return graph_independent_system(
-            grid_points,
-            spin_states,
-            fig_title=fig_title,
-            rotate=rotate,
-            plot_figure=plot_figure,
-        )
-
-    if st is SystemType.NON_ANTIPODAL:
-        return graph_system(
-            grid_points,
-            spin_states,
-            fig_title=fig_title,
-            antipodal=False,
-            rotate=rotate,
-            plot_figure=plot_figure,
-        )
-
-    if st is SystemType.EUCLIDEAN:
-        return graph_euclidean_system(
-            grid_points,
-            spin_states,
-            fig_title=fig_title,
-            plot_figure=plot_figure,
-        )
-
-    raise ValueError(f"Unknown system_type: {system_type}")
+    return graph_system(
+        grid_points,
+        spin_states,
+        fig_title=fig_title,
+        antipodal=False,
+        rotate=rotate,
+        plot_figure=plot_figure,
+    )
 
 
 # ==================

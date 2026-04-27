@@ -13,7 +13,6 @@ from .build_neighbors import build_neighborhood
 from .core import (
     AnnealData,
     AnnealSchedule,
-    config_from_system_type,
     ConstraintModel,
     DeltaType,
     Geometry,
@@ -28,8 +27,6 @@ from .core import (
     SystemConfig,
     SystemDefinition,
     SystemState,
-    SystemType,
-    system_type_from_config,
     UpdateRule,
 )
 from .euclidean import (
@@ -117,8 +114,6 @@ class System:
     config : SystemConfig
         Canonical orthogonal description of the system geometry,
         constraint model, interaction model, and update rule.
-    system_type : SystemType
-        Legacy compatibility view derived from `config`.
     delta : DeltaType
         Last interaction kernel used for neighborhood construction. Prefer
         passing this to `compute_neighborhood()`.
@@ -164,48 +159,47 @@ class System:
     def __init__(
         self,
         grid: NDArray[np.float64],
-        jump_distance: float | None = None,
-        system_type: SystemType | str | None = None,
-        delta: DeltaType | str = DeltaType.TWO,
-        num_spins: int | None = None,
+        config: SystemConfig,
         *,
-        config: SystemConfig | dict[str, str] | None = None,
-        geometry: Geometry | str | None = None,
-        constraint: ConstraintModel | str | None = None,
-        interaction_model: InteractionModel | str | None = None,
-        update_rule: UpdateRule | str | None = None,
+        num_spins: int | None = None,
     ) -> None:
-        resolved_config = self._resolve_config(
-            system_type=system_type,
-            config=config,
-            geometry=geometry,
-            constraint=constraint,
-            interaction_model=interaction_model,
-            update_rule=update_rule,
-        )
-        coerced_delta = self._coerce_delta(delta)
-        coerced_jump_distance = (
-            None
-            if jump_distance is None
-            else self._coerce_jump_distance(jump_distance)
-        )
-
         self._definition = self._build_definition(
             grid=grid,
-            config=resolved_config,
+            config=self._coerce_config(config),
             num_spins=num_spins,
         )
         self._neighborhood_model = NeighborhoodModel(
-            delta=coerced_delta,
-            jump_distance=coerced_jump_distance,
+            delta=DeltaType.TWO,
+            jump_distance=None,
         )
         self._runtime = OptimizationRuntime()
+
+    @classmethod
+    def inverse(cls, grid: NDArray[np.float64]) -> "System":
+        return cls(grid, config=SystemConfig.inverse())
+
+    @classmethod
+    def independent(cls, grid: NDArray[np.float64]) -> "System":
+        return cls(grid, config=SystemConfig.independent())
+
+    @classmethod
+    def non_antipodal(cls, grid: NDArray[np.float64]) -> "System":
+        return cls(grid, config=SystemConfig.non_antipodal())
+
+    @classmethod
+    def euclidean(
+        cls,
+        grid: NDArray[np.float64],
+        *,
+        num_spins: int,
+    ) -> "System":
+        return cls(grid, config=SystemConfig.euclidean(), num_spins=num_spins)
 
     def __repr__(self) -> str:
         return (
             "System("
             f"geometry={self.geometry.value!r}, "
-            f"constraint={self.constraint_model.value!r}, "
+            f"constraint={self.constraint.value!r}, "
             f"interaction_model={self.interaction_model.value!r}, "
             f"update_rule={self.update_rule.value!r}, "
             f"grid_shape={tuple(int(dim) for dim in self.grid.shape)!r}, "
@@ -215,18 +209,6 @@ class System:
             f"initialized={self.initialized}"
             ")"
         )
-
-    @property
-    def definition(self) -> SystemDefinition:
-        return self._definition
-
-    @property
-    def neighborhood_model(self) -> NeighborhoodModel:
-        return self._neighborhood_model
-
-    @property
-    def runtime(self) -> OptimizationRuntime:
-        return self._runtime
 
     @property
     def config(self) -> SystemConfig:
@@ -240,14 +222,6 @@ class System:
     def jump_distance(self) -> float | None:
         return self._neighborhood_model.jump_distance
 
-    @jump_distance.setter
-    def jump_distance(self, value: float | None) -> None:
-        self._neighborhood_model.jump_distance = value
-
-    @property
-    def system_type(self) -> SystemType:
-        return system_type_from_config(self.config)
-
     @property
     def geometry(self) -> Geometry:
         return self._definition.geometry
@@ -257,10 +231,6 @@ class System:
         return self._definition.constraint
 
     @property
-    def constraint_model(self) -> ConstraintModel:
-        return self.constraint
-
-    @property
     def interaction_model(self) -> InteractionModel:
         return self._definition.interaction_model
 
@@ -268,108 +238,37 @@ class System:
     def update_rule(self) -> UpdateRule:
         return self._definition.update_rule
 
-    def _set_config(self, config: SystemConfig) -> None:
-        self._definition.config = config
-        self._definition.system_shape = self._derive_system_shape(
-            config=config,
-            n_sites=int(self.grid.shape[0]),
-            num_spins=int(self.num_spins),
-        )
-
-    @config.setter
-    def config(self, value: SystemConfig | dict[str, str]) -> None:
-        self._set_config(self._coerce_config(value))
-
     @property
     def delta(self) -> DeltaType:
         return self._neighborhood_model.delta
-
-    @delta.setter
-    def delta(self, value: DeltaType | str) -> None:
-        self._neighborhood_model.delta = self._coerce_delta(value)
 
     @property
     def num_spins(self) -> int:
         return self._definition.num_spins
 
-    @num_spins.setter
-    def num_spins(self, value: int) -> None:
-        self._definition.num_spins = int(value)
-        self._definition.system_shape = self._derive_system_shape(
-            config=self.config,
-            n_sites=int(self.grid.shape[0]),
-            num_spins=int(self._definition.num_spins),
-        )
-
     @property
     def dimension(self) -> int:
         return self._definition.dimension
-
-    @dimension.setter
-    def dimension(self, value: int) -> None:
-        self._definition.dimension = int(value)
 
     @property
     def antipodal(self) -> bool:
         return self._definition.antipodal
 
-    @antipodal.setter
-    def antipodal(self, value: bool) -> None:
-        if bool(value):
-            if self.antipodal:
-                return
-            self._set_config(
-                SystemConfig(
-                    geometry=self.geometry,
-                    constraint=ConstraintModel.ANTIPODAL,
-                    interaction_model=InteractionModel.INVERSE,
-                    update_rule=UpdateRule.FLIP,
-                )
-            )
-            return
-
-        if not self.antipodal:
-            return
-        self._set_config(
-            SystemConfig(
-                geometry=self.geometry,
-                constraint=ConstraintModel.FIXED_DENSITY,
-                interaction_model=InteractionModel.OCCUPANCY,
-                update_rule=UpdateRule.SWAP,
-            )
-        )
-
     @property
     def initialized(self) -> bool:
         return self._runtime.initialized
-
-    @initialized.setter
-    def initialized(self, value: bool) -> None:
-        self._runtime.initialized = bool(value)
 
     @property
     def neighborhood(self) -> NeighborhoodData | None:
         return self._neighborhood_model.neighborhood
 
-    @neighborhood.setter
-    def neighborhood(self, value: NeighborhoodData | None) -> None:
-        self._neighborhood_model.neighborhood = value
-
     @property
     def prob_prefactor(self) -> float:
         return self._neighborhood_model.prob_prefactor
 
-    @prob_prefactor.setter
-    def prob_prefactor(self, value: float) -> None:
-        self._neighborhood_model.prob_prefactor = float(value)
-
     @property
     def system_shape(self) -> int | tuple[int, ...] | None:
         return self._definition.system_shape
-
-    @system_shape.setter
-    def system_shape(self, value: int | tuple[int, ...] | None) -> None:
-        self._definition.system_shape = value
 
     @property
     def current_system(self) -> NDArray[np.bool_] | None:
@@ -407,47 +306,17 @@ class System:
     def anneal_data(self) -> AnnealData:
         return self._runtime.anneal_data
 
-    @anneal_data.setter
-    def anneal_data(self, value: AnnealData) -> None:
-        self._runtime.anneal_data = value
-
     @property
     def greedy_history(self) -> GreedyHistory:
         return self._runtime.greedy_history
-
-    @greedy_history.setter
-    def greedy_history(self, value: GreedyHistory) -> None:
-        self._runtime.greedy_history = value
 
     @property
     def parallel_tempering_history(self) -> ParallelTemperingHistory:
         return self._runtime.parallel_tempering_history
 
-    @parallel_tempering_history.setter
-    def parallel_tempering_history(self, value: ParallelTemperingHistory) -> None:
-        self._runtime.parallel_tempering_history = value
-
     @property
     def occupancy(self) -> OccupancyState | None:
         return self._runtime.occupancy
-
-    @occupancy.setter
-    def occupancy(self, value: OccupancyState | None) -> None:
-        self._runtime.occupancy = value
-
-    @classmethod
-    def _coerce_system_type(cls, value: SystemType | str) -> SystemType:
-        if isinstance(value, SystemType):
-            return value
-        if isinstance(value, str):
-            try:
-                return SystemType(value.lower().replace("_", "-"))
-            except ValueError as exc:
-                valid = ", ".join(system_type.value for system_type in SystemType)
-                raise ValueError(
-                    f"Unknown system_type {value!r}. Expected one of: {valid}."
-                ) from exc
-        raise TypeError("system_type must be a SystemType or string.")
 
     @classmethod
     def _coerce_geometry(cls, value: Geometry | str) -> Geometry:
@@ -532,87 +401,11 @@ class System:
     @classmethod
     def _coerce_config(
         cls,
-        value: SystemConfig | dict[str, str],
+        value: SystemConfig,
     ) -> SystemConfig:
         if isinstance(value, SystemConfig):
             return value
-        if isinstance(value, dict):
-            missing = {
-                "geometry",
-                "constraint",
-                "interaction_model",
-                "update_rule",
-            } - set(value)
-            if missing:
-                raise TypeError(
-                    f"SystemConfig mapping is missing required field(s): {sorted(missing)}."
-                )
-            return SystemConfig(
-                geometry=cls._coerce_geometry(value["geometry"]),
-                constraint=cls._coerce_constraint(value["constraint"]),
-                interaction_model=cls._coerce_interaction_model(
-                    value["interaction_model"]
-                ),
-                update_rule=cls._coerce_update_rule(value["update_rule"]),
-            )
-        raise TypeError("config must be a SystemConfig or mapping.")
-
-    @classmethod
-    def _resolve_config(
-        cls,
-        *,
-        system_type: SystemType | str | None,
-        config: SystemConfig | dict[str, str] | None,
-        geometry: Geometry | str | None,
-        constraint: ConstraintModel | str | None,
-        interaction_model: InteractionModel | str | None,
-        update_rule: UpdateRule | str | None,
-    ) -> SystemConfig:
-        orthogonal_values = (
-            geometry,
-            constraint,
-            interaction_model,
-            update_rule,
-        )
-        if config is not None:
-            if system_type is not None or any(value is not None for value in orthogonal_values):
-                raise ValueError(
-                    "Pass either config=... or the legacy/new individual config fields, not both."
-                )
-            return cls._coerce_config(config)
-
-        if any(value is not None for value in orthogonal_values):
-            if system_type is not None:
-                raise ValueError(
-                    "Pass either system_type=... or geometry/constraint/interaction_model/update_rule, not both."
-                )
-            missing = [
-                name
-                for name, value in (
-                    ("geometry", geometry),
-                    ("constraint", constraint),
-                    ("interaction_model", interaction_model),
-                    ("update_rule", update_rule),
-                )
-                if value is None
-            ]
-            if missing:
-                raise ValueError(
-                    "Orthogonal config requires all fields. Missing: "
-                    + ", ".join(missing)
-                    + "."
-                )
-            return SystemConfig(
-                geometry=cls._coerce_geometry(geometry),
-                constraint=cls._coerce_constraint(constraint),
-                interaction_model=cls._coerce_interaction_model(interaction_model),
-                update_rule=cls._coerce_update_rule(update_rule),
-            )
-
-        legacy_system_type = (
-            SystemType.INVERSE if system_type is None else cls._coerce_system_type(system_type)
-        )
-        return config_from_system_type(legacy_system_type)
+        raise TypeError("config must be a SystemConfig.")
 
     @staticmethod
     def _derive_system_shape(
@@ -780,20 +573,20 @@ class System:
         """
         Build and store the neighborhood; also compute probability prefactor.
         """
-        self.jump_distance = self._coerce_jump_distance(
+        self._neighborhood_model.jump_distance = self._coerce_jump_distance(
             self.jump_distance if jump_distance is None else jump_distance
         )
         if delta is not None:
-            self.delta = self._coerce_delta(delta)
+            self._neighborhood_model.delta = self._coerce_delta(delta)
         else:
-            self.delta = self._coerce_delta(self.delta)
+            self._neighborhood_model.delta = self._coerce_delta(self.delta)
 
         if self.geometry == Geometry.EUCLIDEAN:
-            self.prob_prefactor = calculate_prob_prefactor_euclidean(
+            self._neighborhood_model.prob_prefactor = calculate_prob_prefactor_euclidean(
                 len(self.grid), self.jump_distance, self.dimension
             )
         else:
-            self.prob_prefactor = calculate_prob_prefactor(
+            self._neighborhood_model.prob_prefactor = calculate_prob_prefactor(
                 len(self.grid), self.jump_distance
             )
 
@@ -806,7 +599,7 @@ class System:
                 silent=silent,
                 distance_metric=metric,
             )
-            self.neighborhood = NonAntipodalNeighborhoodCSR.from_rows(rows)
+            self._neighborhood_model.neighborhood = NonAntipodalNeighborhoodCSR.from_rows(rows)
             return
 
         rows = build_neighborhood(
@@ -817,7 +610,7 @@ class System:
             silent=silent,
             distance_metric="spherical" if distance_metric is None else distance_metric,
         )
-        self.neighborhood = (
+        self._neighborhood_model.neighborhood = (
             rows if self.antipodal else NonAntipodalNeighborhoodCSR.from_rows(rows)
         )
 
@@ -863,7 +656,7 @@ class System:
             neighborhood=self.neighborhood,
             prob_prefactor=float(self.prob_prefactor),
         )
-        clone._runtime = self.runtime.copy()
+        clone._runtime = self._runtime.copy()
         return clone
 
     def __copy__(self) -> "System":
@@ -871,7 +664,7 @@ class System:
 
     def set_occupancy(self, occupancy: OccupancyState | None) -> None:
         """Attach fixed-density occupancy lists."""
-        self.occupancy = None if occupancy is None else occupancy.copy()
+        self._runtime.occupancy = None if occupancy is None else occupancy.copy()
 
     def sync_occupancy_from_spins(self) -> None:
         """Rebuild occupied/unoccupied lists from current_system."""
@@ -891,39 +684,39 @@ class System:
 
     def snapshot_state(self) -> SystemState:
         """Return a detached copy of mutable spin state."""
-        return self.runtime.snapshot_state()
+        return self._runtime.snapshot_state()
 
     def restore_state(self, state: SystemState) -> None:
         """Restore mutable spin state from a snapshot."""
-        self.runtime.restore_state(state)
+        self._runtime.restore_state(state)
 
     # --- initializers ---
     def random_init(self) -> None:
         self._require_neighborhood()
         init_random(self)
-        self.initialized = True
+        self._runtime.initialized = True
 
     def hemisphere_init(self) -> None:
         self._require_neighborhood()
         if self.geometry == Geometry.EUCLIDEAN:
             raise ValueError("hemisphere_init() requires a spherical grid.")
         init_random_hemisphere(self)
-        self.initialized = True
+        self._runtime.initialized = True
 
     def tri_cog_init(self, num_cogs: int, cog_height: float) -> None:
         self._require_neighborhood()
         init_triangle_cogwheel(self, num_cogs, cog_height)
-        self.initialized = True
+        self._runtime.initialized = True
 
     def cos_cog_init(self, num_cogs: int, cog_height: float) -> None:
         self._require_neighborhood()
         init_cosine_cogwheel(self, num_cogs, cog_height)
-        self.initialized = True
+        self._runtime.initialized = True
 
     def array_init(self, spin_array: NDArray[np.bool_]) -> None:
         self._require_neighborhood()
         init_from_array(self, spin_array)
-        self.initialized = True
+        self._runtime.initialized = True
 
     # --- Annealing ---
     def anneal(
@@ -1093,7 +886,7 @@ class System:
                 "Boundary plotting is only implemented for spherical grids."
             )
         system_to_plot = self.current_system if plot_current else self.best_system
-        independent = self.constraint_model == ConstraintModel.INDEPENDENT
+        independent = self.constraint == ConstraintModel.INDEPENDENT
         graph_boundary(
             grid=self.grid,
             spin_states=system_to_plot,
@@ -1106,10 +899,10 @@ class System:
     def _spin_dims_and_coords(self) -> tuple[tuple[str, ...], dict[str, np.ndarray]]:
         """Canonical dims/coords for storing spin arrays based on configuration."""
         n_sites = int(self.grid.shape[0])
-        if self.constraint_model == ConstraintModel.ANTIPODAL:
+        if self.constraint == ConstraintModel.ANTIPODAL:
             dims = ("spin",)
             coords = {"spin": np.arange(self.num_spins)}
-        elif self.constraint_model == ConstraintModel.INDEPENDENT:
+        elif self.constraint == ConstraintModel.INDEPENDENT:
             dims = ("spin", "comp")
             coords = {"spin": np.arange(self.num_spins), "comp": np.array([0, 1])}
         else:  # fixed-density spherical or Euclidean
@@ -1183,7 +976,7 @@ class System:
         attrs = {
             "format_version": self._SAVE_FORMAT_VERSION,
             "geometry": self.geometry.value,
-            "constraint": self.constraint_model.value,
+            "constraint": self.constraint.value,
             "interaction_model": self.interaction_model.value,
             "update_rule": self.update_rule.value,
             "delta": self.delta.value,
@@ -1259,14 +1052,19 @@ class System:
                 "Saved state config does not match this instance. "
                 f"saved={saved_config!r} current={self.config!r}"
             )
-        self.config = saved_config
-        self.delta = saved_delta
-        self.jump_distance = (
+        self._definition.config = saved_config
+        self._definition.system_shape = self._derive_system_shape(
+            config=saved_config,
+            n_sites=int(self.grid.shape[0]),
+            num_spins=int(self.num_spins),
+        )
+        self._neighborhood_model.delta = saved_delta
+        self._neighborhood_model.jump_distance = (
             self._coerce_jump_distance(ds.attrs["jump_distance"])
             if "jump_distance" in ds.attrs
             else None
         )
-        self.initialized = bool(self._require_dataset_attr(ds, "initialized"))
+        self._runtime.initialized = bool(self._require_dataset_attr(ds, "initialized"))
         loaded_num_spins = int(self._require_dataset_attr(ds, "num_spins"))
         if saved_config.geometry == Geometry.EUCLIDEAN and not (
             0 < loaded_num_spins < self.grid.shape[0]
@@ -1275,20 +1073,25 @@ class System:
                 f"Saved Euclidean num_spins must be between 1 and N-1 "
                 f"for N={self.grid.shape[0]} grid sites, got {loaded_num_spins}."
             )
-        self.num_spins = loaded_num_spins
+        self._definition.num_spins = loaded_num_spins
+        self._definition.system_shape = self._derive_system_shape(
+            config=self.config,
+            n_sites=int(self.grid.shape[0]),
+            num_spins=int(self._definition.num_spins),
+        )
         self.current_energy = float(self._require_dataset_attr(ds, "current_energy"))
         self.best_energy = float(self._require_dataset_attr(ds, "best_energy"))
-        self.anneal_data = self._history_from_json(
+        self._runtime.anneal_data = self._history_from_json(
             self._require_dataset_attr(ds, "anneal_data_json"),
             AnnealData,
             attr_name="anneal_data_json",
         )
-        self.greedy_history = self._history_from_json(
+        self._runtime.greedy_history = self._history_from_json(
             self._require_dataset_attr(ds, "greedy_history_json"),
             GreedyHistory,
             attr_name="greedy_history_json",
         )
-        self.parallel_tempering_history = self._history_from_json(
+        self._runtime.parallel_tempering_history = self._history_from_json(
             self._require_dataset_attr(ds, "parallel_tempering_history_json"),
             ParallelTemperingHistory,
             attr_name="parallel_tempering_history_json",
@@ -1332,21 +1135,21 @@ class System:
             self.set_occupancy(None)
 
         # 3) Recompute prob_prefactor from live grid + jump_distance (grid wasn't saved)
-        self.dimension = int(self.grid.shape[1])
+        self._definition.dimension = int(self.grid.shape[1])
         if self.jump_distance is None:
-            self.prob_prefactor = 0.0
+            self._neighborhood_model.prob_prefactor = 0.0
         elif self.geometry == Geometry.EUCLIDEAN:
-            self.prob_prefactor = calculate_prob_prefactor_euclidean(
+            self._neighborhood_model.prob_prefactor = calculate_prob_prefactor_euclidean(
                 len(self.grid), self.jump_distance, self.dimension
             )
         else:
-            self.prob_prefactor = calculate_prob_prefactor(
+            self._neighborhood_model.prob_prefactor = calculate_prob_prefactor(
                 len(self.grid), self.jump_distance
             )
 
         # 4) Safety: neighborhood must be rebuilt
-        self.neighborhood = None
+        self._neighborhood_model.neighborhood = None
 
         # 5) If no spin state present, mark uninitialized
         if self.current_system is None and self.best_system is None:
-            self.initialized = False
+            self._runtime.initialized = False

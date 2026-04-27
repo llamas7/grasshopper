@@ -548,13 +548,6 @@ class ParallelTemperingHistory:
         )
 
 
-class SystemType(str, Enum):
-    INVERSE = "inverse"
-    INDEPENDENT = "independent"
-    NON_ANTIPODAL = "non-antipodal"
-    EUCLIDEAN = "euclidean"
-
-
 class Geometry(str, Enum):
     SPHERICAL = "spherical"
     EUCLIDEAN = "euclidean"
@@ -592,7 +585,7 @@ class DeltaType(str, Enum):
 
 @dataclass(frozen=True)
 class SystemConfig:
-    """Orthogonal system description independent of legacy system labels."""
+    """Orthogonal system description for a supported optimizer/system family."""
 
     geometry: Geometry
     constraint: ConstraintModel
@@ -648,54 +641,41 @@ class SystemConfig:
             ConstraintModel.INDEPENDENT,
         )
 
+    @classmethod
+    def inverse(cls) -> "SystemConfig":
+        return cls(
+            geometry=Geometry.SPHERICAL,
+            constraint=ConstraintModel.ANTIPODAL,
+            interaction_model=InteractionModel.INVERSE,
+            update_rule=UpdateRule.FLIP,
+        )
 
-LEGACY_SYSTEM_TYPE_TO_CONFIG: dict[SystemType, SystemConfig] = {
-    SystemType.INVERSE: SystemConfig(
-        geometry=Geometry.SPHERICAL,
-        constraint=ConstraintModel.ANTIPODAL,
-        interaction_model=InteractionModel.INVERSE,
-        update_rule=UpdateRule.FLIP,
-    ),
-    SystemType.INDEPENDENT: SystemConfig(
-        geometry=Geometry.SPHERICAL,
-        constraint=ConstraintModel.INDEPENDENT,
-        interaction_model=InteractionModel.INDEPENDENT,
-        update_rule=UpdateRule.FLIP,
-    ),
-    SystemType.NON_ANTIPODAL: SystemConfig(
-        geometry=Geometry.SPHERICAL,
-        constraint=ConstraintModel.FIXED_DENSITY,
-        interaction_model=InteractionModel.OCCUPANCY,
-        update_rule=UpdateRule.SWAP,
-    ),
-    SystemType.EUCLIDEAN: SystemConfig(
-        geometry=Geometry.EUCLIDEAN,
-        constraint=ConstraintModel.FIXED_DENSITY,
-        interaction_model=InteractionModel.OCCUPANCY,
-        update_rule=UpdateRule.SWAP,
-    ),
-}
+    @classmethod
+    def independent(cls) -> "SystemConfig":
+        return cls(
+            geometry=Geometry.SPHERICAL,
+            constraint=ConstraintModel.INDEPENDENT,
+            interaction_model=InteractionModel.INDEPENDENT,
+            update_rule=UpdateRule.FLIP,
+        )
 
-CONFIG_TO_LEGACY_SYSTEM_TYPE: dict[SystemConfig, SystemType] = {
-    config: system_type
-    for system_type, config in LEGACY_SYSTEM_TYPE_TO_CONFIG.items()
-}
+    @classmethod
+    def non_antipodal(cls) -> "SystemConfig":
+        return cls(
+            geometry=Geometry.SPHERICAL,
+            constraint=ConstraintModel.FIXED_DENSITY,
+            interaction_model=InteractionModel.OCCUPANCY,
+            update_rule=UpdateRule.SWAP,
+        )
 
-
-def config_from_system_type(system_type: SystemType | str) -> SystemConfig:
-    if isinstance(system_type, str):
-        system_type = SystemType(system_type.lower().replace("_", "-"))
-    return LEGACY_SYSTEM_TYPE_TO_CONFIG[system_type]
-
-
-def system_type_from_config(config: SystemConfig) -> SystemType:
-    try:
-        return CONFIG_TO_LEGACY_SYSTEM_TYPE[config]
-    except KeyError as exc:
-        raise ValueError(
-            "No legacy SystemType exists for configuration "
-            f"{config!r}."
-        ) from exc
+    @classmethod
+    def euclidean(cls) -> "SystemConfig":
+        return cls(
+            geometry=Geometry.EUCLIDEAN,
+            constraint=ConstraintModel.FIXED_DENSITY,
+            interaction_model=InteractionModel.OCCUPANCY,
+            update_rule=UpdateRule.SWAP,
+        )
 
 
 @dataclass
@@ -731,10 +711,6 @@ class SystemDefinition:
     @property
     def antipodal(self) -> bool:
         return self.config.antipodal
-
-    @property
-    def system_type(self) -> SystemType:
-        return system_type_from_config(self.config)
 
 
 @dataclass

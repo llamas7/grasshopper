@@ -28,13 +28,13 @@ class OptimizationFlowTests(unittest.TestCase):
         np.random.seed(12345)
 
     def make_inverse_system(self) -> rf.System:
-        system = rf.System(spherical_grid(), system_type="inverse")
+        system = rf.System.inverse(spherical_grid())
         system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         system.array_init(np.array([True, False, True], dtype=bool))
         return system
 
     def make_independent_system(self) -> rf.System:
-        system = rf.System(spherical_grid(), system_type="independent")
+        system = rf.System.independent(spherical_grid())
         system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         system.array_init(
             np.array(
@@ -49,7 +49,7 @@ class OptimizationFlowTests(unittest.TestCase):
         return system
 
     def make_non_antipodal_system(self) -> rf.System:
-        system = rf.System(spherical_grid(), system_type="non-antipodal")
+        system = rf.System.non_antipodal(spherical_grid())
         system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         system.array_init(
             np.array([True, False, True, False, True, False], dtype=bool)
@@ -57,14 +57,7 @@ class OptimizationFlowTests(unittest.TestCase):
         return system
 
     def make_euclidean_system(self) -> rf.System:
-        system = rf.System(
-            euclidean_grid(),
-            geometry="euclidean",
-            constraint="fixed-density",
-            interaction_model="occupancy",
-            update_rule="swap",
-            num_spins=2,
-        )
+        system = rf.System.euclidean(euclidean_grid(), num_spins=2)
         system.compute_neighborhood(jump_distance=1.0, silent=True)
         system.array_init(np.array([True, False, True, False], dtype=bool))
         return system
@@ -189,14 +182,7 @@ class OptimizationFlowTests(unittest.TestCase):
         )
         save_path = system.save(test_dir)
 
-        loaded = rf.System(
-            euclidean_grid(),
-            geometry="euclidean",
-            constraint="fixed-density",
-            interaction_model="occupancy",
-            update_rule="swap",
-            num_spins=2,
-        )
+        loaded = rf.System.euclidean(euclidean_grid(), num_spins=2)
         loaded.load(save_path)
 
         self.assertTrue(np.array_equal(system.current_system, loaded.current_system))

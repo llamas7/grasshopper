@@ -19,59 +19,48 @@ class SystemApiTests(unittest.TestCase):
     def setUp(self) -> None:
         np.random.seed(12345)
 
-    def test_legacy_system_type_maps_to_expected_config(self) -> None:
-        system = rf.System(spherical_grid(), system_type="non-antipodal")
+    def test_named_constructors_set_expected_configs(self) -> None:
+        system = rf.System.non_antipodal(spherical_grid())
 
-        self.assertEqual(system.system_type, rf.SystemType.NON_ANTIPODAL)
         self.assertEqual(system.geometry, rf.Geometry.SPHERICAL)
-        self.assertEqual(system.constraint_model, rf.ConstraintModel.FIXED_DENSITY)
+        self.assertEqual(system.constraint, rf.ConstraintModel.FIXED_DENSITY)
         self.assertEqual(system.interaction_model, rf.InteractionModel.OCCUPANCY)
         self.assertEqual(system.update_rule, rf.UpdateRule.SWAP)
-        self.assertEqual(system.config, rf.config_from_system_type(rf.SystemType.NON_ANTIPODAL))
+        self.assertEqual(system.config, rf.SystemConfig.non_antipodal())
 
-    def test_orthogonal_euclidean_constructor_sets_expected_config(self) -> None:
-        system = rf.System(
-            euclidean_grid(),
-            geometry="euclidean",
-            constraint="fixed-density",
-            interaction_model="occupancy",
-            update_rule="swap",
-            num_spins=2,
-        )
+        inverse = rf.System.inverse(spherical_grid())
+        self.assertEqual(inverse.config, rf.SystemConfig.inverse())
 
-        self.assertEqual(system.system_type, rf.SystemType.EUCLIDEAN)
+    def test_explicit_config_constructor_sets_expected_config(self) -> None:
+        system = rf.System(euclidean_grid(), config=rf.SystemConfig.euclidean(), num_spins=2)
+
         self.assertEqual(system.geometry, rf.Geometry.EUCLIDEAN)
-        self.assertEqual(system.constraint_model, rf.ConstraintModel.FIXED_DENSITY)
+        self.assertEqual(system.constraint, rf.ConstraintModel.FIXED_DENSITY)
         self.assertEqual(system.interaction_model, rf.InteractionModel.OCCUPANCY)
         self.assertEqual(system.update_rule, rf.UpdateRule.SWAP)
         self.assertEqual(system.system_shape, 4)
 
-    def test_removed_positional_shorthand_raises_value_error(self) -> None:
-        with self.assertRaisesRegex(ValueError, "could not convert string to float"):
-            rf.System(spherical_grid(), "non-antipodal")
+    def test_removed_legacy_constructor_shapes_raise_type_error(self) -> None:
+        with self.assertRaises(TypeError):
+            rf.System(spherical_grid(), system_type="non-antipodal")
+        with self.assertRaises(TypeError):
+            rf.System(spherical_grid(), geometry="spherical")
 
     def test_compute_neighborhood_requires_jump_distance(self) -> None:
-        system = rf.System(spherical_grid(), system_type="inverse")
+        system = rf.System.inverse(spherical_grid())
         with self.assertRaisesRegex(ValueError, "jump_distance is required"):
             system.compute_neighborhood()
 
     def test_compute_neighborhood_storage_matches_config(self) -> None:
-        inverse = rf.System(spherical_grid(), system_type="inverse")
+        inverse = rf.System.inverse(spherical_grid())
         inverse.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         self.assertIsInstance(inverse.neighborhood, list)
 
-        non_antipodal = rf.System(spherical_grid(), system_type="non-antipodal")
+        non_antipodal = rf.System.non_antipodal(spherical_grid())
         non_antipodal.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         self.assertIsInstance(non_antipodal.neighborhood, rf.NonAntipodalNeighborhoodCSR)
 
-        euclidean = rf.System(
-            euclidean_grid(),
-            geometry="euclidean",
-            constraint="fixed-density",
-            interaction_model="occupancy",
-            update_rule="swap",
-            num_spins=2,
-        )
+        euclidean = rf.System.euclidean(euclidean_grid(), num_spins=2)
         euclidean.compute_neighborhood(jump_distance=1.0, silent=True)
         self.assertIsInstance(euclidean.neighborhood, rf.NonAntipodalNeighborhoodCSR)
 
@@ -121,7 +110,7 @@ class SystemApiTests(unittest.TestCase):
 
     def test_save_directory_and_explicit_file_paths(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
-        system = rf.System(spherical_grid(), system_type="inverse")
+        system = rf.System.inverse(spherical_grid())
         system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         system.array_init(np.array([True, False, True], dtype=bool))
 
@@ -134,14 +123,7 @@ class SystemApiTests(unittest.TestCase):
         self.assertTrue(file_path.exists())
 
     def test_to_dataset_uses_current_persistence_schema(self) -> None:
-        system = rf.System(
-            euclidean_grid(),
-            geometry="euclidean",
-            constraint="fixed-density",
-            interaction_model="occupancy",
-            update_rule="swap",
-            num_spins=2,
-        )
+        system = rf.System.euclidean(euclidean_grid(), num_spins=2)
         system.compute_neighborhood(jump_distance=1.0, silent=True)
         system.array_init(np.array([True, False, True, False], dtype=bool))
 
