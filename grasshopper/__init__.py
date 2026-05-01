@@ -1,3 +1,11 @@
+"""
+grasshopper public package API.
+
+Euclidean systems are fixed-density systems: candidate lattice sites may
+outnumber occupied sites, and physical length scale is set by the occupied-site
+count (`System.num_spins`).
+"""
+
 from .core import (
     AnnealData,
     AnnealRecord,
@@ -19,8 +27,18 @@ from .core import (
     UpdateRule,
 )
 from .greedy import GreedyResult
+from .lattices import (
+    hexagonal_lattice,
+    honeycomb_lattice,
+    rectangular_lattice,
+    regular_lattice,
+    square_lattice,
+    triangular_lattice,
+)
 from .metrics import DistanceMetric
 from .parallel_tempering import ParallelTemperingResult
+
+__version__ = "0.1.0"
 
 __all__ = [
     "AnnealData",
@@ -33,6 +51,8 @@ __all__ = [
     "GreedyHistory",
     "GreedyRecord",
     "GreedyResult",
+    "hexagonal_lattice",
+    "honeycomb_lattice",
     "InteractionModel",
     "Neighborhood",
     "NeighborhoodData",
@@ -42,9 +62,14 @@ __all__ = [
     "ParallelTemperingHistory",
     "ParallelTemperingRecord",
     "ParallelTemperingResult",
+    "rectangular_lattice",
+    "regular_lattice",
+    "square_lattice",
     "SystemConfig",
     "System",
+    "triangular_lattice",
     "UpdateRule",
+    "__version__",
 ]
 
 

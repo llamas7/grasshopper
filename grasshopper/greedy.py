@@ -65,8 +65,8 @@ def greedy_optimization(
 
     At each step, the engine's greedy update is selected. The update is
     applied only when its energy delta is strictly larger than `min_delta`.
-    Exact energy recomputation is enabled by default so greedy optimization
-    stops instead of cycling if an incremental delta disagrees with exact energy.
+    When `reinit=True`, the exact energy state is recomputed only at the
+    beginning and end of the optimization run.
     """
     _require_greedy_ready(system)
     if max_steps is not None and max_steps < 0:
@@ -99,22 +99,10 @@ def greedy_optimization(
             converged = True
             break
 
-        if reinit:
-            previous_state = system.snapshot_state()
-            previous_energy = float(system.current_energy)
-
         update(system, suggested_update, energy_array)
         system.current_energy += dE
 
-        if reinit:
-            energy_array = _recompute_energy_state(system, engine, track_best)
-            exact_delta = system.current_energy - previous_energy
-            if exact_delta <= min_delta:
-                system.restore_state(previous_state)
-                converged = True
-                break
-            dE = exact_delta
-        elif track_best and system.current_energy > system.best_energy:
+        if track_best and system.current_energy > system.best_energy:
             system.best_energy = system.current_energy
             system.best_system = system.current_system.copy()
 
@@ -126,6 +114,9 @@ def greedy_optimization(
                 f"[greedy] step={steps}, dE={dE:.6g}, "
                 f"energy={system.current_energy:.6g}"
             )
+
+    if reinit:
+        _recompute_energy_state(system, engine, track_best)
 
     system.greedy_history.append_result(
         steps=int(steps),

@@ -680,7 +680,14 @@ class SystemConfig:
 
 @dataclass
 class SystemDefinition:
-    """Static system metadata derived at construction time."""
+    """
+    Static system metadata derived at construction time.
+
+    For Euclidean systems, `num_spins` is the number of occupied sites, while
+    `grid.shape[0]` is the number of candidate lattice sites. The conserved
+    occupied volume is fixed to 1.0, so kernel cell length is
+    `(1.0 / num_spins) ** (1 / dimension)`.
+    """
 
     grid: NDArray[np.float64]
     config: SystemConfig
@@ -717,8 +724,11 @@ class SystemDefinition:
 class NeighborhoodModel:
     """Neighborhood configuration plus cached derived structures."""
 
-    delta: DeltaType
+    delta: DeltaType | Callable[..., Any]
+    delta_is_custom: bool = False
     jump_distance: float | None = None
+    distance_metric: Any | None = None
+    distance_metric_is_custom: bool = False
     neighborhood: NeighborhoodData | None = None
     prob_prefactor: float = 0.0
 

@@ -5,8 +5,8 @@ import shutil
 
 import numpy as np
 
-import refactoredpc as rf
-from refactoredpc.engines import get_engine
+import grasshopper as gh
+from grasshopper.engines import get_engine
 
 
 SPHERICAL_GRID = np.array(
@@ -42,11 +42,11 @@ def euclidean_grid() -> np.ndarray:
     return EUCLIDEAN_GRID.copy()
 
 
-def exact_energy(system: rf.System) -> float:
+def exact_energy(system: gh.System) -> float:
     return float(get_engine(system.config).energy(system.current_system, system.neighborhood))
 
 
-def assert_fixed_density_consistent(testcase, system: rf.System) -> None:
+def assert_fixed_density_consistent(testcase, system: gh.System) -> None:
     testcase.assertIsNotNone(system.occupancy)
     testcase.assertIsNotNone(system.current_system)
     system.occupancy.validate(

@@ -1,53 +1,95 @@
-# spherical_grasshopper
+# grasshopper
 
-Sparse Monte Carlo optimization tools for spherical and Euclidean spin systems.
+`grasshopper` is a Python library for sparse spin-system optimization on spherical and Euclidean grids.
 
-The actively maintained package in this repository is `refactoredpc/`. It supports:
+It includes:
 
-- spherical antipodal inverse systems
+- spherical inverse systems
 - spherical independent systems
 - spherical fixed-density non-antipodal systems
 - Euclidean fixed-density systems
 - simulated annealing
 - greedy local descent
 - serial and multiprocessing parallel tempering
-- NetCDF save/load via `xarray`
-- optional Numba acceleration for the annealing kernels
-
-## Repository layout
-
-- `refactoredpc/` - current package
-- `tests/` - `unittest` test suite
-- `collect_data.py` - example batch script
-- `refactored/` - older code kept in the repo, but not the current API target
+- NetCDF save/load through `xarray`
+- optional Numba acceleration for annealing kernels
 
 ## Installation
 
-This project has been exercised with Python 3.12.
+For local development:
+
+```bash
+pip install -e .
+```
+
+If you prefer using the repository requirements file:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Optional GPU neighborhood building requires a CUDA-matched CuPy build. The CPU path is the default and is the only path wired into `System.compute_neighborhood()` right now.
+Optional GPU neighborhood helpers require a CUDA-matched CuPy build. The default library path is CPU-based.
 
-## Core API
+## Codex Runtime
 
-The recommended constructors are:
+This repository includes a repo-local Python runtime at `.codex-python/` for Codex desktop sessions. Inside this project, the intended test command is:
 
-```python
-import refactoredpc as rf
-
-system = rf.System.inverse(grid)
-system = rf.System.independent(grid)
-system = rf.System.non_antipodal(grid)
-system = rf.System.euclidean(grid, num_spins=1000)
+```bash
+python -m unittest discover -s tests -v
 ```
 
-There is also a lower-level constructor if you want to work directly with `SystemConfig`:
+If a newly opened Codex conversation still does not resolve `python`, restart the Codex app so it picks up the updated user `PATH`.
+
+## Package layout
+
+- [grasshopper](/C:/Users/polka/OneDrive/Documents/Codex/spherical_grasshopper/grasshopper) - installable library package
+- [tests](/C:/Users/polka/OneDrive/Documents/Codex/spherical_grasshopper/tests) - `unittest` suite
+- [collect_data.py](/C:/Users/polka/OneDrive/Documents/Codex/spherical_grasshopper/collect_data.py) - example batch script
+- [pyproject.toml](/C:/Users/polka/OneDrive/Documents/Codex/spherical_grasshopper/pyproject.toml) - build metadata
+
+## Quick start
 
 ```python
-system = rf.System(grid, config=rf.SystemConfig.non_antipodal())
+import numpy as np
+import grasshopper as gh
+
+grid = np.loadtxt("path/to/grid.txt")
+
+system = gh.System.non_antipodal(grid)
+system.compute_neighborhood(
+    jump_distance=0.23 * np.pi,
+    delta="two",
+)
+system.random_init(seed=123)
+system.thermalize(steps_per_temp=100_000, seed=456)
+system.parallel_temper(
+    num_replicas=8,
+    iterations=50,
+    sweep_steps=50_000,
+    n_workers=1,
+    seed=789,
+)
+system.greedy(reinit=False)
+system.save("output/non_antipodal_run.nc")
+```
+
+## Constructors
+
+The recommended entrypoints are:
+
+```python
+system = gh.System.inverse(grid)
+system = gh.System.independent(grid)
+system = gh.System.non_antipodal(grid)
+system = gh.System.euclidean(grid, num_spins=1000)
+system = gh.System.square_lattice(width=64, height=64, density=0.5)
+system = gh.System.hexagonal_lattice(width=32, height=32, num_spins=512)
+```
+
+There is also a lower-level explicit constructor:
+
+```python
+system = gh.System(grid, config=gh.SystemConfig.non_antipodal())
 ```
 
 ## Supported system families
@@ -59,68 +101,53 @@ system = rf.System(grid, config=rf.SystemConfig.non_antipodal())
 | Non-antipodal | `System.non_antipodal(grid)` | Spherical | Fixed-density | Swap |
 | Euclidean | `System.euclidean(grid, num_spins=...)` | Euclidean | Fixed-density | Swap |
 
-For spherical systems the grid is expected to have shape `(N, 3)` with Cartesian coordinates on the sphere. For Euclidean systems the grid is expected to have shape `(N, d)`.
+Spherical grids should have shape `(N, 3)` with Cartesian coordinates on the unit sphere. Euclidean grids should have shape `(N, d)`.
 
-## Typical workflow
+## Regular 2D lattices
 
-1. Construct a system.
-2. Build the neighborhood with `compute_neighborhood(...)`.
-3. Initialize a state.
-4. Optionally thermalize.
-5. Run one or more optimizers.
-6. Save the result.
-
-### Example: spherical fixed-density workflow
+For Euclidean fixed-density systems on common regular lattices, build the grid
+and system in one call:
 
 ```python
-import numpy as np
-import refactoredpc as rf
-
-grid = np.loadtxt("path/to/grid.txt")
-
-system = rf.System.non_antipodal(grid)
-system.compute_neighborhood(
-    jump_distance=0.23 * np.pi,
-    delta="two",
-)
-system.random_init()
-system.thermalize(steps_per_temp=100_000)
-system.parallel_temper(
-    num_replicas=8,
-    iterations=50,
-    sweep_steps=50_000,
-    n_workers=1,
-)
-system.greedy(reinit=False)
-system.save("output/non_antipodal_run.nc")
+square = gh.System.square_lattice(64, 64, density=0.5)
+rectangular = gh.System.rectangular_lattice(64, 32, density=0.5)
+triangular = gh.System.triangular_lattice(64, 64, num_spins=2048)
+hexagonal = gh.System.hexagonal_lattice(32, 32, density=0.5)
 ```
 
-### Example: Euclidean workflow
+Euclidean systems use a fixed total occupied spin-cell area of `1.0` by
+default. If `num_spins=k`, each occupied spin has area `1 / k`, so the 2D
+length scale is `1 / sqrt(k)` even when the candidate lattice has more than
+`k` sites. Raw `System.euclidean(grid, ...)` inputs and regular-lattice system
+constructors normalize the candidate grid to volume `site_count / k` by
+default. For example, with `num_spins=1000`, `jump_distance=0.30` has the same
+physical meaning whether the square candidate grid is coarse or refined.
+
+The exported grid builders, such as `gh.square_lattice(...)`, only create raw
+candidate-site coordinates. For example, `gh.square_lattice(100, 100)` still
+returns spacing `0.01`. The occupied-site normalization happens when those
+coordinates are wrapped in `System.euclidean(...)` or created through a
+`System.*_lattice(...)` constructor. To control a custom candidate geometry,
+build the raw coordinates directly and pass them to `System.euclidean(...)`;
+the system will still set the final physical scale from `num_spins`.
+
+`hexagonal_lattice()` builds the honeycomb/hexagonal tiling lattice with two
+sites per unit cell. `triangular_lattice()` builds the triangular Bravais
+lattice with six nearest neighbors in the interior.
+
+The same grid constructors are also exported directly:
 
 ```python
-import numpy as np
-import refactoredpc as rf
-
-grid = np.random.rand(5000, 2)
-
-system = rf.System.euclidean(grid, num_spins=1500)
-system.compute_neighborhood(
-    jump_distance=0.08,
-    delta="two",
-    distance_metric="euclidean",
-)
-system.random_init()
-system.anneal(
-    starting_temp=20.0,
-    final_temp=0.05,
-    steps=100_000,
-    max_iterations=80,
-)
+grid = gh.square_lattice(64, 64, center=True)
+system = gh.System.euclidean(grid, num_spins=grid.shape[0] // 2)
 ```
 
-## Neighborhoods and metrics
+All regular-lattice system constructors accept either `num_spins=` or
+`density=`. If both are omitted, they default to half filling.
 
-Neighborhood construction is explicit and call-time configurable:
+## Neighborhood construction
+
+Neighborhoods are configured at call time:
 
 ```python
 system.compute_neighborhood(
@@ -130,35 +157,42 @@ system.compute_neighborhood(
 )
 ```
 
-Built-in distance metrics include:
+Built-in distance metrics:
 
 - `"spherical"` / `"angular"` / `"geodesic"`
 - `"euclidean"` / `"l2"`
 - `"manhattan"` / `"cityblock"` / `"l1"`
 - `"chebyshev"` / `"linf"`
 
-You can also pass a custom callable metric.
+You can also provide a custom callable metric.
 
-Supported kernel names include:
+Supported kernel names:
 
 - `"two"`
 - `"one_star"` or `"one*"`
 - `"two_star"` or `"two*"`
 - `"exact"` / `"delta"` / `"dirac"` / `"real_delta"`
 
-The exact delta kernel only interacts when the distance error is within floating-point tolerance.
+Unknown kernel names raise `ValueError` at every API layer. You can also pass a
+custom callable kernel as `delta=...`; it should accept `(distances,
+cell_length)` and return `(contributions, mask)`.
 
-## Initialization methods
+## Initialization
 
 Depending on the system family, you can initialize with:
 
-- `random_init()`
-- `hemisphere_init()` for spherical systems
+- `random_init(seed=...)`
+- `hemisphere_init(seed=...)` for spherical systems
 - `tri_cog_init(num_cogs=..., cog_height=...)`
 - `cos_cog_init(num_cogs=..., cog_height=...)`
 - `array_init(spin_array)`
 
-## Optimization methods
+Passing `seed=` to stochastic methods makes that call reproducible without
+advancing the caller's global NumPy random state. The stochastic methods with
+seed support are `random_init`, `hemisphere_init`, `thermalize`, `anneal`, and
+`parallel_temper`.
+
+## Optimization
 
 ### Thermalization
 
@@ -167,6 +201,7 @@ system.thermalize(
     target_acceptance=0.6,
     tolerance=0.05,
     steps_per_temp=100_000,
+    seed=123,
 )
 ```
 
@@ -183,10 +218,11 @@ system.anneal(
     max_iterations=100,
     save_path="output/anneal.nc",
     save_interval=5,
+    seed=123,
 )
 ```
 
-You can also pass an `rf.AnnealSchedule(...)` object as `schedule=...`.
+You can also pass `schedule=gh.AnnealSchedule(...)`.
 
 ### Greedy descent
 
@@ -209,6 +245,7 @@ result = system.parallel_temper(
     hot_temp=system.temperature,
     n_workers=4,
     save_path="output/pt.nc",
+    seed=123,
 )
 ```
 
@@ -219,64 +256,69 @@ if __name__ == "__main__":
     ...
 ```
 
-In notebooks, using `n_workers=1` is the least surprising option.
+In notebooks, `n_workers=1` is the safest default.
 
-## Histories and results
+## Histories
 
-Each optimizer keeps its own history on the `System`:
+Each optimizer records its own history on the system:
 
 - `system.anneal_data`
 - `system.greedy_history`
 - `system.parallel_tempering_history`
 
-That separation keeps annealing, greedy, and PT records from being mixed together.
-
 ## Save and load
 
-Save/load uses a NetCDF file produced through `xarray`:
+Save/load uses a NetCDF file written through `xarray`:
 
 ```python
 path = system.save("output/run.nc")
 system.load("output/run.nc")
 ```
 
-If you pass a directory-like path with no suffix:
-
-```python
-system.save("output/run_01")
-```
-
-the file written is:
-
-```text
-output/run_01/system_state.nc
-```
+If you pass a path with no suffix, the library treats it as a directory and writes `system_state.nc` inside it.
 
 Important persistence note:
 
-- the spin state, energies, temperature, and optimizer histories are saved
+- spin state, energies, temperature, and optimizer histories are saved
+- neighborhood construction metadata is saved, including jump distance, kernel,
+  distance metric, probability prefactor, grid shape/dtype, and neighborhood
+  storage summary
+- Euclidean saved metadata includes both candidate-site count (`site_count`) and
+  occupied-site count (`num_spins`)
 - the grid is not saved
 - the neighborhood is not saved
 
-To load a saved state, first reconstruct a matching `System` with the same grid and configuration, then call `load(...)`. Rebuild the neighborhood after loading if you want to continue optimizing.
+To load a saved state, rebuild a matching `System` with the same grid and configuration, then call `load(...)`. Rebuild the neighborhood afterward if you want to continue optimizing. For saved states that used built-in kernel and distance metric names, `compute_neighborhood()` reuses the loaded jump distance, kernel, and distance metric when you omit them. If the original kernel or metric was a custom callable, pass that callable again with `delta=...` or `distance_metric=...`.
 
 ## Plotting
 
-The package includes plotting helpers through:
+The package includes:
 
 - `system.plot(...)`
+- `system.plot_lattice(...)` for 2D Euclidean regular lattices
 - `system.plot_boundary(...)` for spherical systems
+
+For regular 2D lattices:
+
+```python
+system = gh.System.hexagonal_lattice(16, 16, density=0.5)
+system.plot_lattice(show_edges=True)
+
+system.compute_neighborhood(jump_distance=0.30)
+system.random_init(seed=123)
+system.plot(plot_current=True, show_edges=True)
+```
 
 These rely on `plotly`, `matplotlib`, `pandas`, and `scipy`.
 
-## Running tests
+## Testing
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-## Notes on acceleration
+## Acceleration notes
 
-- Numba acceleration is used automatically when available for the annealing kernels.
-- GPU neighborhood helpers live in `refactoredpc/build_neighbors_gpu.py`.
-- GPU support is optional and requires installing a CuPy build compatible with your CUDA version.
+- Numba acceleration is used automatically when available.
+- GPU neighborhood helpers live in [grasshopper/build_neighbors_gpu.py](/C:/Users/polka/OneDrive/Documents/Codex/spherical_grasshopper/grasshopper/build_neighbors_gpu.py).
+- GPU support is optional and requires installing a CuPy build that matches your CUDA setup.

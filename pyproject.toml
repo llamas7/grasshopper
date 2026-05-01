@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grasshopper"
+version = "0.1.0"
+description = "Sparse spin-system optimization tools for spherical and Euclidean grids."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "xarray>=2024.1",
+    "pandas>=2.1",
+    "plotly>=5.18",
+    "matplotlib>=3.8",
+    "tqdm>=4.66",
+    "numba>=0.65",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+
+[tool.setuptools.packages.find]
+include = ["grasshopper", "grasshopper.*"]
+
+[tool.setuptools.package-data]
+grasshopper = ["py.typed"]

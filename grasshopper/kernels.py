@@ -6,6 +6,7 @@ import numpy as np
 
 
 EXACT_DELTA_ATOL = 100.0 * np.finfo(float).eps
+ZERO_CONTRIBUTION_ATOL = 100.0 * np.finfo(float).eps
 
 
 def calculate_prob_prefactor(n_points: int, theta: float) -> float:
@@ -90,7 +91,13 @@ def resolve_delta_kernel(delta: str | Callable) -> tuple[Callable, float, bool]:
         "exact_delta": "exact",
         "real_delta": "exact",
     }
-    canonical = aliases.get(delta_key, "two")
+    try:
+        canonical = aliases[delta_key]
+    except KeyError as exc:
+        valid = ", ".join(sorted(aliases))
+        raise ValueError(
+            f"Unknown delta {raw_delta!r}. Expected one of: {valid}, or a callable."
+        ) from exc
     discrete_functions = {
         "two": delta_two,
         "one_star": delta_one_star,
@@ -118,4 +125,10 @@ def calculate_contributions(
 ) -> tuple[np.ndarray, np.ndarray, float]:
     abs_distances = np.abs(jump_distance - distances)
     contributions, interacting_bool = delta_func(abs_distances, cell_length)
+    nonzero_bool = np.abs(contributions) > ZERO_CONTRIBUTION_ATOL
+    if not np.all(nonzero_bool):
+        interacting_indices = np.flatnonzero(interacting_bool)
+        interacting_bool = interacting_bool.copy()
+        interacting_bool[interacting_indices[~nonzero_bool]] = False
+        contributions = contributions[nonzero_bool]
     return contributions, interacting_bool, float(np.sum(contributions))

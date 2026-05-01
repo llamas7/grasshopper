@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -33,8 +34,17 @@ from .euclidean import (
     DistanceMetric,
     build_euclidean_neighborhood,
     calculate_prob_prefactor_euclidean,
+    normalize_euclidean_grid,
 )
 from .kernels import calculate_prob_prefactor
+from .lattices import (
+    hexagonal_lattice,
+    rectangular_lattice,
+    regular_lattice,
+    square_lattice,
+    triangular_lattice,
+)
+from .rng import Seed
 from .initialization import (
     init_random,
     init_random_hemisphere,
@@ -53,23 +63,30 @@ class System:
 
     This class encapsulates all state, metadata, and operations required to run
     Monte-Carlo-based optimization (thermalization + simulated annealing) for the
-    spherical grasshopper system. A `System` instance owns:
+    grasshopper spin system. A `System` instance owns:
 
-    • the spherical grid (Nx3 Cartesian coordinates),
-    • system type (INVERSE, INDEPENDENT, NON_ANTIPODAL),
-    • neighborhood parameters (jump distance and interaction kernel) once built,
-    • computed neighborhood structure,
-    • current and best spin configurations,
-    • optimization history (energy and acceptance records),
-    • save/load routines for reproducibility.
+    - the grid coordinates,
+    - system geometry, constraints, interaction model, and update rule,
+    - neighborhood parameters once built,
+    - computed neighborhood structure,
+    - current and best spin configurations,
+    - optimization history,
+    - save/load metadata for reproducibility.
+
+    Euclidean systems distinguish candidate lattice sites from occupied sites.
+    `grid.shape[0]` is the number of candidate sites, while `num_spins` is the
+    number of occupied sites conserved by fixed-density updates. The physical
+    cell length is derived from occupied volume, not candidate-site count:
+    `(1.0 / num_spins) ** (1 / dimension)`. In 2D, the Euclidean length scale is
+    `1 / sqrt(num_spins)`.
 
     The lifecycle of a `System` object is:
 
     1. **Construction**
-       Provide a grid and either an orthogonal config or legacy system type.
-       The constructor normalizes enums, validates grid shape, infers the
-       expected spin layout, computes the number of spins, and prepares an
-       `AnnealData` history container.
+       Provide a grid and a `SystemConfig`, or use one of the named
+       constructors. The constructor normalizes enums, validates grid shape,
+       infers the expected spin layout, computes the number of spins, and
+       prepares optimization history containers.
 
     2. **Neighborhood construction**
        Call `compute_neighborhood(jump_distance=..., delta=...)`. This builds
@@ -78,13 +95,13 @@ class System:
 
     3. **Initialization**
        Choose one of:
-           • `random_init()`
-           • `hemisphere_init()`
-           • `tri_cog_init()`
-           • `cos_cog_init()`
-           • `array_init(spin_array)`
+           - `random_init(seed=...)`
+           - `hemisphere_init(seed=...)`
+           - `tri_cog_init()`
+           - `cos_cog_init()`
+           - `array_init(spin_array)`
        These create `current_system`, compute its energy, and record the initial
-       “best” configuration.
+       best configuration.
 
     4. **Thermalization (optional, but recommended)**
        `thermalize()` adaptively adjusts the temperature to achieve a target
@@ -99,15 +116,18 @@ class System:
 
     6. **Saving and Loading**
        `save(path)` writes the spin states and anneal statistics to NetCDF.
-       Note that **grid and neighborhood are not saved**; reconstructing a system
-       after loading requires rebuilding the neighborhood manually.
+       Note that **grid and neighborhood rows are not saved**; reconstructing a
+       system after loading requires rebuilding the neighborhood manually.
+       Neighborhood construction metadata is saved for built-in distance
+       metrics.
        `load(path)` restores spin arrays, energies, and optimization records
        while validating consistency with the current grid.
 
     Attributes
     ----------
     grid : ndarray of shape (N, d)
-        Point coordinates for the active geometry.
+        Point coordinates for the active geometry. For Euclidean systems these
+        are candidate lattice sites.
     jump_distance : float | None
         Last distance used to construct the current neighborhood. Prefer
         passing this to `compute_neighborhood()`.
@@ -119,8 +139,9 @@ class System:
         passing this to `compute_neighborhood()`.
     num_spins : int | None
         For Euclidean systems, the number of occupied sites to initialize and
-        preserve during fixed-density updates. If omitted, defaults to N/2.
-        Spherical systems derive this from the grid size.
+        preserve during fixed-density updates, and the count that determines
+        physical cell length. If omitted in the low-level constructor, defaults
+        to N/2. Spherical systems derive this from the grid size.
 
     internal attributes (set automatically)
     ---------------------------------------
@@ -133,7 +154,8 @@ class System:
     prob_prefactor : float
         Multiplicative factor used in Boltzmann probability calculations.
     num_spins : int
-        Number of logical spins (N/2 for antipodal systems).
+        Number of logical spins. For Euclidean systems this is the occupied-site
+        count; for antipodal systems it is N/2.
     system_shape : tuple or int
         Expected shape of spin arrays based on `config`.
     current_system : ndarray or None
@@ -148,9 +170,9 @@ class System:
         Optimization history and acceptance statistics.
     Notes
     -----
-    • You must call `compute_neighborhood(jump_distance=...)` before initializing spins.
-    • You must initialize spins before calling `anneal()` or `thermalize()`.
-    • Saving includes spin configurations and annealing metadata, but does NOT
+    - You must call `compute_neighborhood(jump_distance=...)` before initializing spins.
+    - You must initialize spins before calling `anneal()` or `thermalize()`.
+    - Saving includes spin configurations and annealing metadata, but does NOT
       include the grid itself; the same grid must exist on the object before `load()`.
     """
 
@@ -163,6 +185,13 @@ class System:
         *,
         num_spins: int | None = None,
     ) -> None:
+        """
+        Construct a system from grid coordinates and an explicit configuration.
+
+        For Euclidean configs, `num_spins` is the occupied-site count. The
+        conserved occupied volume is fixed to 1.0, so the candidate grid is
+        scaled to estimated volume `len(grid) / num_spins`.
+        """
         self._definition = self._build_definition(
             grid=grid,
             config=self._coerce_config(config),
@@ -170,20 +199,26 @@ class System:
         )
         self._neighborhood_model = NeighborhoodModel(
             delta=DeltaType.TWO,
+            delta_is_custom=False,
             jump_distance=None,
+            distance_metric=None,
+            distance_metric_is_custom=False,
         )
         self._runtime = OptimizationRuntime()
 
     @classmethod
     def inverse(cls, grid: NDArray[np.float64]) -> "System":
+        """Construct a spherical antipodal inverse system."""
         return cls(grid, config=SystemConfig.inverse())
 
     @classmethod
     def independent(cls, grid: NDArray[np.float64]) -> "System":
+        """Construct a spherical independent-spin system."""
         return cls(grid, config=SystemConfig.independent())
 
     @classmethod
     def non_antipodal(cls, grid: NDArray[np.float64]) -> "System":
+        """Construct a spherical fixed-density non-antipodal system."""
         return cls(grid, config=SystemConfig.non_antipodal())
 
     @classmethod
@@ -193,7 +228,189 @@ class System:
         *,
         num_spins: int,
     ) -> "System":
-        return cls(grid, config=SystemConfig.euclidean(), num_spins=num_spins)
+        """
+        Construct a fixed-density Euclidean system from candidate grid points.
+
+        `num_spins` is the number of occupied sites, not necessarily the number
+        of rows in `grid`. The candidate grid is always scaled to estimated
+        volume `len(grid) / num_spins`, which makes each occupied spin represent
+        area/volume `1 / num_spins`.
+        """
+        return cls(
+            grid,
+            config=SystemConfig.euclidean(),
+            num_spins=num_spins,
+        )
+
+    @classmethod
+    def square_lattice(
+        cls,
+        width: int,
+        height: int,
+        *,
+        num_spins: int | None = None,
+        density: float | None = None,
+        origin: tuple[float, float] = (0.0, 0.0),
+        center: bool = False,
+    ) -> "System":
+        """
+        Construct a 2D fixed-density Euclidean system on a square lattice.
+
+        `num_spins` or `density` determines the occupied-site count. By default,
+        coordinates are normalized so the physical length scale is set by that
+        occupied-site count (`1 / sqrt(num_spins)` in 2D), not by
+        `width * height`.
+        """
+        grid = square_lattice(
+            width,
+            height,
+            origin=origin,
+            center=center,
+        )
+        return cls.euclidean(
+            grid,
+            num_spins=cls._resolve_regular_lattice_num_spins(
+                len(grid),
+                num_spins=num_spins,
+                density=density,
+            ),
+        )
+
+    @classmethod
+    def rectangular_lattice(
+        cls,
+        width: int,
+        height: int,
+        *,
+        num_spins: int | None = None,
+        density: float | None = None,
+        origin: tuple[float, float] = (0.0, 0.0),
+        center: bool = False,
+    ) -> "System":
+        """
+        Construct a 2D fixed-density Euclidean system on a rectangular lattice.
+
+        The candidate lattice has `width * height` sites, but the Euclidean
+        interaction scale is normalized from the occupied-site count resolved
+        from `num_spins` or `density`.
+        """
+        grid = rectangular_lattice(
+            width,
+            height,
+            origin=origin,
+            center=center,
+        )
+        return cls.euclidean(
+            grid,
+            num_spins=cls._resolve_regular_lattice_num_spins(
+                len(grid),
+                num_spins=num_spins,
+                density=density,
+            ),
+        )
+
+    @classmethod
+    def triangular_lattice(
+        cls,
+        width: int,
+        height: int,
+        *,
+        num_spins: int | None = None,
+        density: float | None = None,
+        origin: tuple[float, float] = (0.0, 0.0),
+        center: bool = False,
+    ) -> "System":
+        """
+        Construct a 2D fixed-density Euclidean system on a triangular lattice.
+
+        The lattice coordinates are normalized by occupied-site count by
+        default, so refining the candidate lattice does not change the physical
+        jump-distance scale when `num_spins` is unchanged.
+        """
+        grid = triangular_lattice(
+            width,
+            height,
+            origin=origin,
+            center=center,
+        )
+        return cls.euclidean(
+            grid,
+            num_spins=cls._resolve_regular_lattice_num_spins(
+                len(grid),
+                num_spins=num_spins,
+                density=density,
+            ),
+        )
+
+    @classmethod
+    def hexagonal_lattice(
+        cls,
+        width: int,
+        height: int,
+        *,
+        num_spins: int | None = None,
+        density: float | None = None,
+        origin: tuple[float, float] = (0.0, 0.0),
+        center: bool = False,
+    ) -> "System":
+        """
+        Construct a 2D fixed-density Euclidean system on a honeycomb lattice.
+
+        Each hexagonal unit cell contributes two candidate sites. The default
+        Euclidean normalization uses the occupied-site count from `num_spins` or
+        `density`, not the total candidate-site count, to set cell length.
+        """
+        grid = hexagonal_lattice(
+            width,
+            height,
+            origin=origin,
+            center=center,
+        )
+        return cls.euclidean(
+            grid,
+            num_spins=cls._resolve_regular_lattice_num_spins(
+                len(grid),
+                num_spins=num_spins,
+                density=density,
+            ),
+        )
+
+    honeycomb_lattice = hexagonal_lattice
+
+    @classmethod
+    def regular_lattice(
+        cls,
+        lattice: str,
+        width: int,
+        height: int,
+        *,
+        num_spins: int | None = None,
+        density: float | None = None,
+        origin: tuple[float, float] = (0.0, 0.0),
+        center: bool = False,
+    ) -> "System":
+        """
+        Construct a 2D fixed-density Euclidean system on a named regular lattice.
+
+        Supported lattice names include square, rectangular, triangular,
+        hexagonal, and honeycomb aliases. Default normalization uses the
+        occupied-site count resolved from `num_spins` or `density`.
+        """
+        grid = regular_lattice(
+            lattice,
+            width,
+            height,
+            origin=origin,
+            center=center,
+        )
+        return cls.euclidean(
+            grid,
+            num_spins=cls._resolve_regular_lattice_num_spins(
+                len(grid),
+                num_spins=num_spins,
+                density=density,
+            ),
+        )
 
     def __repr__(self) -> str:
         return (
@@ -204,7 +421,8 @@ class System:
             f"update_rule={self.update_rule.value!r}, "
             f"grid_shape={tuple(int(dim) for dim in self.grid.shape)!r}, "
             f"jump_distance={self.jump_distance!r}, "
-            f"delta={self.delta.value!r}, "
+            f"delta={self._delta_display(self.delta)!r}, "
+            f"distance_metric={self.distance_metric!r}, "
             f"num_spins={self.num_spins}, "
             f"initialized={self.initialized}"
             ")"
@@ -239,8 +457,12 @@ class System:
         return self._definition.update_rule
 
     @property
-    def delta(self) -> DeltaType:
+    def delta(self) -> DeltaType | Callable:
         return self._neighborhood_model.delta
+
+    @property
+    def distance_metric(self) -> DistanceMetric | None:
+        return self._neighborhood_model.distance_metric
 
     @property
     def num_spins(self) -> int:
@@ -421,7 +643,9 @@ class System:
         return n_sites
 
     @classmethod
-    def _coerce_delta(cls, value: DeltaType | str) -> DeltaType:
+    def _coerce_delta(cls, value: DeltaType | str | Callable) -> DeltaType | Callable:
+        if callable(value):
+            return value
         if isinstance(value, DeltaType):
             return value
         if isinstance(value, str):
@@ -431,7 +655,57 @@ class System:
                     return delta
             valid = ", ".join(delta.value for delta in DeltaType)
             raise ValueError(f"Unknown delta {value!r}. Expected one of: {valid}.")
-        raise TypeError("delta must be a DeltaType or string.")
+        raise TypeError("delta must be a DeltaType, string, or callable.")
+
+    @staticmethod
+    def _delta_argument(delta: DeltaType | Callable) -> str | Callable:
+        return delta.value if isinstance(delta, DeltaType) else delta
+
+    @staticmethod
+    def _delta_display(delta: DeltaType | Callable) -> str:
+        return delta.value if isinstance(delta, DeltaType) else repr(delta)
+
+    def _resolve_delta_for_compute(
+        self,
+        delta: DeltaType | str | Callable | None,
+    ) -> DeltaType | Callable:
+        if delta is not None:
+            return self._coerce_delta(delta)
+        if self._neighborhood_model.delta_is_custom:
+            raise ValueError(
+                "The saved neighborhood metadata used a custom delta kernel. "
+                "Pass delta=... to compute_neighborhood() to rebuild it."
+            )
+        if self._neighborhood_model.delta is not None:
+            return self._coerce_delta(self.delta)
+        return DeltaType.TWO
+
+    @staticmethod
+    def _is_custom_delta(delta: DeltaType | Callable) -> bool:
+        return not isinstance(delta, DeltaType)
+
+    @staticmethod
+    def _default_distance_metric(geometry: Geometry) -> str:
+        return "euclidean" if geometry == Geometry.EUCLIDEAN else "spherical"
+
+    def _resolve_distance_metric_for_compute(
+        self,
+        distance_metric: DistanceMetric | None,
+    ) -> DistanceMetric:
+        if distance_metric is not None:
+            return distance_metric
+        if self._neighborhood_model.distance_metric is not None:
+            return self._neighborhood_model.distance_metric
+        if self._neighborhood_model.distance_metric_is_custom:
+            raise ValueError(
+                "The saved neighborhood metadata used a custom distance_metric. "
+                "Pass distance_metric=... to compute_neighborhood() to rebuild it."
+            )
+        return self._default_distance_metric(self.geometry)
+
+    @staticmethod
+    def _is_custom_distance_metric(distance_metric: DistanceMetric) -> bool:
+        return not isinstance(distance_metric, str)
 
     @staticmethod
     def _coerce_jump_distance(value: float | None) -> float:
@@ -484,6 +758,34 @@ class System:
 
         return AnnealSchedule.from_mapping(data)
 
+    @staticmethod
+    def _resolve_regular_lattice_num_spins(
+        n_sites: int,
+        *,
+        num_spins: int | None,
+        density: float | None,
+    ) -> int:
+        if num_spins is not None and density is not None:
+            raise ValueError("Pass either num_spins or density, not both.")
+        if density is not None:
+            if isinstance(density, bool):
+                raise TypeError("density must be a number between 0 and 1.")
+            density = float(density)
+            if not np.isfinite(density) or not 0 < density < 1:
+                raise ValueError("density must be between 0 and 1.")
+            num_spins = int(round(n_sites * density))
+        elif num_spins is None:
+            num_spins = n_sites // 2
+
+        if isinstance(num_spins, bool) or not isinstance(num_spins, (int, np.integer)):
+            raise TypeError("num_spins must be an integer.")
+        resolved = int(num_spins)
+        if not 0 < resolved < n_sites:
+            raise ValueError(
+                f"num_spins must be between 1 and N-1 for N={n_sites}, got {resolved}."
+            )
+        return resolved
+
     @classmethod
     def _build_definition(
         cls,
@@ -492,7 +794,13 @@ class System:
         config: SystemConfig,
         num_spins: int | None,
     ) -> SystemDefinition:
-        """Validate constructor inputs and derive static system metadata."""
+        """
+        Validate constructor inputs and derive static system metadata.
+
+        For Euclidean systems, normalization targets candidate-grid volume
+        `n_sites / num_spins`. This preserves total occupied volume 1.0 while
+        allowing the candidate lattice to have more sites than are occupied.
+        """
         if not isinstance(grid, np.ndarray):
             raise TypeError(f"grid must be a numpy.ndarray, got {type(grid)!r}")
 
@@ -514,6 +822,7 @@ class System:
             )
         if not np.issubdtype(grid.dtype, np.number):
             raise TypeError("grid must contain numeric values")
+        grid = np.ascontiguousarray(grid, dtype=np.float64)
 
         n_sites = int(grid.shape[0])
         dimension = int(grid.shape[1])
@@ -550,6 +859,10 @@ class System:
                 f"for N={n_sites} grid sites, got {resolved_num_spins}."
             )
 
+        if config.geometry == Geometry.EUCLIDEAN:
+            target_volume = n_sites / resolved_num_spins
+            grid = normalize_euclidean_grid(grid, target_volume=target_volume)
+
         return SystemDefinition(
             grid=grid,
             config=config,
@@ -566,24 +879,34 @@ class System:
         self,
         jump_distance: float | None = None,
         *,
-        delta: DeltaType | str | None = None,
+        delta: DeltaType | str | Callable | None = None,
         silent: bool = True,
         distance_metric: DistanceMetric | None = None,
     ) -> None:
         """
-        Build and store the neighborhood; also compute probability prefactor.
+        Build and store the neighborhood and probability prefactor.
+
+        For Euclidean systems, kernel cell length is based on `self.num_spins`
+        (occupied sites), not `len(self.grid)`. Thus refining the candidate grid
+        leaves the physical jump-distance scale unchanged as long as the
+        occupied-site count is unchanged.
         """
         self._neighborhood_model.jump_distance = self._coerce_jump_distance(
             self.jump_distance if jump_distance is None else jump_distance
         )
-        if delta is not None:
-            self._neighborhood_model.delta = self._coerce_delta(delta)
-        else:
-            self._neighborhood_model.delta = self._coerce_delta(self.delta)
+        self._neighborhood_model.delta = self._resolve_delta_for_compute(delta)
+        self._neighborhood_model.delta_is_custom = self._is_custom_delta(self.delta)
+        metric = self._resolve_distance_metric_for_compute(distance_metric)
+        self._neighborhood_model.distance_metric = metric
+        self._neighborhood_model.distance_metric_is_custom = (
+            self._is_custom_distance_metric(metric)
+        )
 
         if self.geometry == Geometry.EUCLIDEAN:
             self._neighborhood_model.prob_prefactor = calculate_prob_prefactor_euclidean(
-                len(self.grid), self.jump_distance, self.dimension
+                self.num_spins,
+                self.jump_distance,
+                self.dimension,
             )
         else:
             self._neighborhood_model.prob_prefactor = calculate_prob_prefactor(
@@ -591,13 +914,13 @@ class System:
             )
 
         if self.geometry == Geometry.EUCLIDEAN:
-            metric = "euclidean" if distance_metric is None else distance_metric
             rows = build_euclidean_neighborhood(
                 self.grid,
                 self.jump_distance,
-                delta=self.delta.value,
+                delta=self._delta_argument(self.delta),
                 silent=silent,
                 distance_metric=metric,
+                occupied_sites=self.num_spins,
             )
             self._neighborhood_model.neighborhood = NonAntipodalNeighborhoodCSR.from_rows(rows)
             return
@@ -606,9 +929,9 @@ class System:
             self.grid,
             self.jump_distance,
             antipodal=self.antipodal,
-            delta=self.delta.value,
+            delta=self._delta_argument(self.delta),
             silent=silent,
-            distance_metric="spherical" if distance_metric is None else distance_metric,
+            distance_metric=metric,
         )
         self._neighborhood_model.neighborhood = (
             rows if self.antipodal else NonAntipodalNeighborhoodCSR.from_rows(rows)
@@ -623,7 +946,7 @@ class System:
     def _require_init(self) -> None:
         if not self.initialized:
             raise RuntimeError(
-                "System needs to be initialized. Call random_init(), hemisphere_init(), tri_cog_init(), cos_cog_init(), or from_array_init() first."
+                "System needs to be initialized. Call random_init(), hemisphere_init(), tri_cog_init(), cos_cog_init(), or array_init() first."
             )
 
     @property
@@ -652,7 +975,10 @@ class System:
         )
         clone._neighborhood_model = NeighborhoodModel(
             delta=self.delta,
+            delta_is_custom=self._neighborhood_model.delta_is_custom,
             jump_distance=self.jump_distance,
+            distance_metric=self.distance_metric,
+            distance_metric_is_custom=self._neighborhood_model.distance_metric_is_custom,
             neighborhood=self.neighborhood,
             prob_prefactor=float(self.prob_prefactor),
         )
@@ -691,16 +1017,16 @@ class System:
         self._runtime.restore_state(state)
 
     # --- initializers ---
-    def random_init(self) -> None:
+    def random_init(self, seed: Seed = None) -> None:
         self._require_neighborhood()
-        init_random(self)
+        init_random(self, seed=seed)
         self._runtime.initialized = True
 
-    def hemisphere_init(self) -> None:
+    def hemisphere_init(self, seed: Seed = None) -> None:
         self._require_neighborhood()
         if self.geometry == Geometry.EUCLIDEAN:
             raise ValueError("hemisphere_init() requires a spherical grid.")
-        init_random_hemisphere(self)
+        init_random_hemisphere(self, seed=seed)
         self._runtime.initialized = True
 
     def tri_cog_init(self, num_cogs: int, cog_height: float) -> None:
@@ -734,6 +1060,7 @@ class System:
         save_interval: int = 1,
         verbose: bool = False,
         reinit: bool = False,
+        seed: Seed = None,
     ) -> None:
         self._require_neighborhood()
         self._require_init()
@@ -757,6 +1084,7 @@ class System:
             save_interval=save_interval,
             verbose=verbose,
             reinit=reinit,
+            seed=seed,
         )
 
     def greedy(
@@ -765,7 +1093,7 @@ class System:
         max_steps: int | None = None,
         min_delta: float = 0.0,
         track_best: bool = True,
-        reinit: bool = True,
+        reinit: bool = False,
         verbose: bool = False,
     ) -> GreedyResult:
         self._require_neighborhood()
@@ -794,10 +1122,10 @@ class System:
         ) = None,
         cold_temp: float = 0.05,
         hot_temp: float | None = None,
-        reinit: bool = True,
+        reinit: bool = False,
         track_best: bool = True,
         save_path: str | Path | None = None,
-        seed: int | None = None,
+        seed: Seed = None,
         n_workers: int = 1,
         verbose: bool = False,
     ) -> ParallelTemperingResult:
@@ -829,6 +1157,7 @@ class System:
         max_adjustments: int = 20,
         k_p: float = 0.5,
         verbose: bool = False,
+        seed: Seed = None,
     ) -> float:
         """Adjust the annealing temperature to reach a target Metropolis acceptance.
 
@@ -847,6 +1176,9 @@ class System:
             by default 0.5.
         verbose : bool, optional
             If True, print thermalization diagnostics, by default False.
+        seed : int | None, optional
+            Seed for this thermalization call. The caller's NumPy RNG state is
+            restored afterward.
         """
         if steps_per_temp is None:
             steps_per_temp = self.num_spins * 10
@@ -859,6 +1191,7 @@ class System:
             max_adjustments=max_adjustments,
             verbose=verbose,
             k_p=k_p,
+            seed=seed,
         )
 
     # --- visualization ---
@@ -866,15 +1199,44 @@ class System:
         self,
         plot_current: bool = False,
         auto_rotate: bool = False,
+        show_edges: bool = False,
+        edge_distance: float | None = None,
+        edge_tolerance: float = 1e-6,
         plot_figure: bool = True,
-    ) -> None:
+    ):
         system_to_plot = self.current_system if plot_current else self.best_system
-        plot_spin_system(
+        if system_to_plot is None and self.geometry != Geometry.EUCLIDEAN:
+            self._require_init()
+        return plot_spin_system(
             system_config=self.config,
             grid_points=self.grid,
             spin_states=system_to_plot,
             fig_title="Current System" if plot_current else "Best System",
             rotate=auto_rotate,
+            show_edges=show_edges,
+            edge_distance=edge_distance,
+            edge_tolerance=edge_tolerance,
+            plot_figure=plot_figure,
+        )
+
+    def plot_lattice(
+        self,
+        *,
+        show_edges: bool = True,
+        edge_distance: float | None = None,
+        edge_tolerance: float = 1e-6,
+        plot_figure: bool = True,
+    ):
+        if self.geometry != Geometry.EUCLIDEAN or self.dimension != 2:
+            raise ValueError("plot_lattice() is only available for 2D Euclidean systems.")
+        return plot_spin_system(
+            system_config=self.config,
+            grid_points=self.grid,
+            spin_states=None,
+            fig_title="Lattice",
+            show_edges=show_edges,
+            edge_distance=edge_distance,
+            edge_tolerance=edge_tolerance,
             plot_figure=plot_figure,
         )
 
@@ -957,8 +1319,75 @@ class System:
             netcdf_path = save_path
         return save_dir, netcdf_path
 
+    def _neighborhood_storage_metadata(self) -> dict[str, int | str | bool]:
+        neighborhood = self.neighborhood
+        if neighborhood is None:
+            return {
+                "neighborhood_built": False,
+                "neighborhood_storage": "none",
+                "neighborhood_rows": 0,
+                "neighborhood_edges": 0,
+            }
+        if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
+            return {
+                "neighborhood_built": True,
+                "neighborhood_storage": "csr",
+                "neighborhood_rows": len(neighborhood),
+                "neighborhood_edges": int(neighborhood.neighbor_spins.size),
+            }
+        if isinstance(neighborhood, list):
+            edges = 0
+            for row in neighborhood:
+                if hasattr(row, "neighbor_spins"):
+                    edges += int(row.neighbor_spins.size)
+                else:
+                    edges += int(row.positive_spins.size)
+                    edges += int(row.negative_spins.size)
+            return {
+                "neighborhood_built": True,
+                "neighborhood_storage": "rows",
+                "neighborhood_rows": len(neighborhood),
+                "neighborhood_edges": edges,
+            }
+        return {
+            "neighborhood_built": True,
+            "neighborhood_storage": type(neighborhood).__name__,
+            "neighborhood_rows": 0,
+            "neighborhood_edges": 0,
+        }
+
+    def _distance_metric_metadata(self) -> dict[str, str | bool]:
+        metric = self.distance_metric
+        custom = bool(self._neighborhood_model.distance_metric_is_custom)
+        attrs: dict[str, str | bool] = {"distance_metric_custom": custom}
+        if metric is None:
+            return attrs
+        if custom:
+            attrs["distance_metric"] = "custom"
+            attrs["distance_metric_repr"] = repr(metric)
+        else:
+            attrs["distance_metric"] = str(metric)
+        return attrs
+
+    def _delta_metadata(self) -> dict[str, str | bool]:
+        delta = self.delta
+        custom = bool(self._neighborhood_model.delta_is_custom)
+        attrs: dict[str, str | bool] = {"delta_custom": custom}
+        if custom:
+            attrs["delta"] = "custom"
+            attrs["delta_repr"] = repr(delta)
+        else:
+            attrs["delta"] = self._delta_argument(delta)
+        return attrs
+
     def to_dataset(self) -> xr.Dataset:
-        """Return an xarray Dataset containing serializable system state."""
+        """
+        Return an xarray Dataset containing serializable system state.
+
+        Euclidean metadata includes both `site_count` and `num_spins` because
+        candidate sites and occupied sites have different roles. The conserved
+        occupied volume is fixed to 1.0, so it is not stored as a user variable.
+        """
         data_vars: dict[str, tuple[tuple[str, ...], np.ndarray]] = {}
         coords: dict[str, np.ndarray] = {}
 
@@ -972,17 +1401,20 @@ class System:
 
         ds = xr.Dataset(data_vars=data_vars, coords=coords)
 
-        # Minimal attrs matching the current SystemConfig-based API.
+        # Scalar metadata needed to validate and rebuild runtime state.
         attrs = {
             "format_version": self._SAVE_FORMAT_VERSION,
             "geometry": self.geometry.value,
             "constraint": self.constraint.value,
             "interaction_model": self.interaction_model.value,
             "update_rule": self.update_rule.value,
-            "delta": self.delta.value,
             "initialized": bool(self.initialized),
             "num_spins": int(self.num_spins),
             "site_count": int(self.grid.shape[0]),
+            "dimension": int(self.dimension),
+            "grid_shape_json": json.dumps([int(dim) for dim in self.grid.shape]),
+            "grid_dtype": str(self.grid.dtype),
+            "prob_prefactor": float(self.prob_prefactor),
             "current_energy": float(self.current_energy),
             "best_energy": float(self.best_energy),
             "temperature": float(self.temperature),
@@ -994,6 +1426,9 @@ class System:
         }
         if self.jump_distance is not None:
             attrs["jump_distance"] = float(self.jump_distance)
+        attrs.update(self._delta_metadata())
+        attrs.update(self._distance_metric_metadata())
+        attrs.update(self._neighborhood_storage_metadata())
         ds.attrs.update(attrs)
         return ds
 
@@ -1008,6 +1443,11 @@ class System:
         Load state from NetCDF saved by `save()` without touching `self.grid`.
         Validates that the saved state matches this instance's grid shape and configuration.
         Rebuild neighborhood yourself after loading if needed.
+
+        For Euclidean systems, the saved occupied-site count (`num_spins`) is
+        restored before the probability prefactor is recomputed. The grid itself
+        is still supplied by the live `System` instance and must match the saved
+        candidate-site metadata.
         """
         load_path = Path(load_path)
         if not load_path.exists():
@@ -1019,10 +1459,16 @@ class System:
             raise ValueError(
                 "Unsupported saved-state format_version "
                 f"{format_version!r}. Expected {self._SAVE_FORMAT_VERSION!r}."
-            )
+        )
 
         saved_config = self._config_from_dataset_attrs(ds)
-        saved_delta = self._coerce_delta(self._require_dataset_attr(ds, "delta"))
+        saved_delta_raw = self._require_dataset_attr(ds, "delta")
+        saved_delta_custom = bool(ds.attrs.get("delta_custom", False))
+        saved_delta = (
+            DeltaType.TWO
+            if saved_delta_custom
+            else self._coerce_delta(saved_delta_raw)
+        )
 
         # 1) Validate against current instance (grid must already exist)
         if not isinstance(self.grid, np.ndarray) or self.grid.ndim != 2:
@@ -1045,6 +1491,23 @@ class System:
                 f"Saved state expects site_count={site_count_saved}, "
                 f"but current grid has {self.grid.shape[0]} sites."
             )
+        if "dimension" in ds.attrs and int(ds.attrs["dimension"]) != self.grid.shape[1]:
+            raise ValueError(
+                f"Saved state expects dimension={int(ds.attrs['dimension'])}, "
+                f"but current grid has dimension={self.grid.shape[1]}."
+            )
+        if "grid_shape_json" in ds.attrs:
+            try:
+                saved_grid_shape = tuple(
+                    int(dim) for dim in json.loads(str(ds.attrs["grid_shape_json"]))
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError("Saved grid_shape_json is not valid JSON.") from exc
+            if saved_grid_shape != tuple(int(dim) for dim in self.grid.shape):
+                raise ValueError(
+                    f"Saved state expects grid_shape={saved_grid_shape}, "
+                    f"but current grid has shape={tuple(self.grid.shape)}."
+                )
 
         # Enums and core attrs
         if saved_config != self.config:
@@ -1059,11 +1522,23 @@ class System:
             num_spins=int(self.num_spins),
         )
         self._neighborhood_model.delta = saved_delta
+        self._neighborhood_model.delta_is_custom = saved_delta_custom
         self._neighborhood_model.jump_distance = (
             self._coerce_jump_distance(ds.attrs["jump_distance"])
             if "jump_distance" in ds.attrs
             else None
         )
+        saved_metric = ds.attrs.get("distance_metric")
+        saved_metric_custom = bool(ds.attrs.get("distance_metric_custom", False))
+        if saved_metric_custom:
+            self._neighborhood_model.distance_metric = None
+            self._neighborhood_model.distance_metric_is_custom = True
+        elif saved_metric is not None:
+            self._neighborhood_model.distance_metric = str(saved_metric)
+            self._neighborhood_model.distance_metric_is_custom = False
+        else:
+            self._neighborhood_model.distance_metric = None
+            self._neighborhood_model.distance_metric_is_custom = False
         self._runtime.initialized = bool(self._require_dataset_attr(ds, "initialized"))
         loaded_num_spins = int(self._require_dataset_attr(ds, "num_spins"))
         if saved_config.geometry == Geometry.EUCLIDEAN and not (
@@ -1140,7 +1615,9 @@ class System:
             self._neighborhood_model.prob_prefactor = 0.0
         elif self.geometry == Geometry.EUCLIDEAN:
             self._neighborhood_model.prob_prefactor = calculate_prob_prefactor_euclidean(
-                len(self.grid), self.jump_distance, self.dimension
+                self.num_spins,
+                self.jump_distance,
+                self.dimension,
             )
         else:
             self._neighborhood_model.prob_prefactor = calculate_prob_prefactor(

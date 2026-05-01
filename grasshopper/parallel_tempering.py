@@ -16,6 +16,7 @@ from .core import (
 )
 from .engines import get_engine
 from .initialization import init_from_array, init_random, sync_occupancy
+from .rng import Seed, restore_numpy_state, seed_numpy
 from .spinflip_numba import compute_spinflip_numba_energy_grid
 
 if TYPE_CHECKING:
@@ -75,7 +76,7 @@ class _ReplicaTask:
     temperature: float
     sweep_steps: int
     reinit: bool
-    seed: int | None
+    seed: Seed
 
 
 @dataclass(frozen=True)
@@ -304,7 +305,7 @@ def _make_worker_task(
         temperature: float,
         sweep_steps: int,
         reinit: bool,
-        seed: int | None,
+        seed: Seed,
 ) -> _ReplicaTask:
     return _ReplicaTask(
         current_system=replica.current_system,
@@ -318,7 +319,7 @@ def _make_worker_task(
     )
 
 
-def _task_seed(base_seed: int | None, iteration: int, replica_index: int) -> int | None:
+def _task_seed(base_seed: Seed, iteration: int, replica_index: int) -> int | None:
     if base_seed is None:
         return None
     return int(
@@ -410,7 +411,7 @@ def _set_best(system: "System", best_system: np.ndarray, best_energy: float) -> 
     system.best_energy = float(best_energy)
 
 
-def parallel_tempering(
+def _parallel_tempering_impl(
         system: "System",
         *,
         temperatures: Sequence[float] | None = None,
@@ -421,10 +422,10 @@ def parallel_tempering(
         initial_states: Sequence[np.ndarray] | None = None,
         cold_temp: float = 0.05,
         hot_temp: float | None = None,
-        reinit: bool = True,
+        reinit: bool = False,
         track_best: bool = True,
         save_path: str | Path | None = None,
-        seed: int | None = None,
+        seed: Seed = None,
         n_workers: int = 1,
         verbose: bool = False,
 ) -> ParallelTemperingResult:
@@ -435,8 +436,6 @@ def parallel_tempering(
     state, occupancy, energy grids, and temperature data.
     """
     _require_parallel_tempering_ready(system)
-    if seed is not None:
-        np.random.seed(seed)
     iterations = int(iterations)
     sweep_steps = int(sweep_steps)
     exchange_interval = int(exchange_interval)
@@ -610,3 +609,45 @@ def parallel_tempering(
         exchange_accepts=exchange_accepts,
         exchange_rates=exchange_rates,
     )
+
+
+def parallel_tempering(
+        system: "System",
+        *,
+        temperatures: Sequence[float] | None = None,
+        num_replicas: int = 8,
+        iterations: int = 100,
+        sweep_steps: int = 100_000,
+        exchange_interval: int = 1,
+        initial_states: Sequence[np.ndarray] | None = None,
+        cold_temp: float = 0.05,
+        hot_temp: float | None = None,
+        reinit: bool = False,
+        track_best: bool = True,
+        save_path: str | Path | None = None,
+        seed: Seed = None,
+        n_workers: int = 1,
+        verbose: bool = False,
+) -> ParallelTemperingResult:
+    """Run replica-exchange Monte Carlo with optional reproducible seeding."""
+    rng_state = seed_numpy(seed)
+    try:
+        return _parallel_tempering_impl(
+            system,
+            temperatures=temperatures,
+            num_replicas=num_replicas,
+            iterations=iterations,
+            sweep_steps=sweep_steps,
+            exchange_interval=exchange_interval,
+            initial_states=initial_states,
+            cold_temp=cold_temp,
+            hot_temp=hot_temp,
+            reinit=reinit,
+            track_best=track_best,
+            save_path=save_path,
+            seed=seed,
+            n_workers=n_workers,
+            verbose=verbose,
+        )
+    finally:
+        restore_numpy_state(rng_state)

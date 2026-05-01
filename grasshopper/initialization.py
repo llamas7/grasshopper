@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from .core import ConstraintModel, Geometry
 from .cogs import cogwheel_interpd
 from .plot_system import convert_ss
+from .rng import Seed, restore_numpy_state, seed_numpy
 from functools import partial
 
 if TYPE_CHECKING:
@@ -31,30 +32,37 @@ def init_system(system: System):
         sync_occupancy(system)
 
 
-def init_random(system: System):
-    if system.constraint == ConstraintModel.FIXED_DENSITY:
-        all_spins = np.arange(len(system.grid))
-        idx = np.random.choice(len(all_spins), size=system.num_spins, replace=False)
-        occupied_sites = all_spins[idx].tolist()
-        system.current_system = np.zeros(len(system.grid), dtype=bool)
-        system.current_system[occupied_sites] = True
-    else:
-        system.current_system = np.random.randint(
-            2, size=system.system_shape, dtype="bool"
-        )
+def init_random(system: System, seed: Seed = None):
+    rng_state = seed_numpy(seed)
+    try:
+        if system.constraint == ConstraintModel.FIXED_DENSITY:
+            all_spins = np.arange(len(system.grid))
+            idx = np.random.choice(len(all_spins), size=system.num_spins, replace=False)
+            occupied_sites = all_spins[idx].tolist()
+            system.current_system = np.zeros(len(system.grid), dtype=bool)
+            system.current_system[occupied_sites] = True
+        else:
+            system.current_system = np.random.randint(
+                2, size=system.system_shape, dtype="bool"
+            )
+    finally:
+        restore_numpy_state(rng_state)
 
     system.best_system = system.current_system.copy()
     init_system(system)
 
 
-def init_random_hemisphere(system: System, seed=None):
+def init_random_hemisphere(system: System, seed: Seed = None):
     if system.geometry == Geometry.EUCLIDEAN:
         raise ValueError("hemisphere_init() requires a spherical grid.")
-    np.random.seed(seed)
-    dimension = int(system.grid.shape[1])
-    norm_vector = np.random.uniform(-1, 1, dimension)
-    while np.linalg.norm(norm_vector) >= 1:
+    rng_state = seed_numpy(seed)
+    try:
+        dimension = int(system.grid.shape[1])
         norm_vector = np.random.uniform(-1, 1, dimension)
+        while np.linalg.norm(norm_vector) >= 1:
+            norm_vector = np.random.uniform(-1, 1, dimension)
+    finally:
+        restore_numpy_state(rng_state)
     norm_vector = norm_vector / np.linalg.norm(norm_vector)
     current_system = (system.grid[: len(system.neighborhood)] @ norm_vector) > 0
     if system.constraint == ConstraintModel.INDEPENDENT:

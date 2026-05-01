@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from .core import SystemType
+from .core import ConstraintModel, Geometry, SystemConfig
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -207,6 +207,62 @@ def _scatter_on_sphere(
         return fig
 
 
+def _infer_2d_lattice_edges(
+        points: NDArray[np.float64],
+        *,
+        edge_distance: float | None = None,
+        edge_tolerance: float = 1e-6,
+) -> NDArray[np.int64]:
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError("points must have shape (N, 2).")
+    if points.shape[0] < 2:
+        return np.empty((0, 2), dtype=np.int64)
+    if edge_tolerance < 0:
+        raise ValueError("edge_tolerance must be nonnegative.")
+
+    tree = sci.spatial.cKDTree(points)
+    if edge_distance is None:
+        distances, _ = tree.query(points, k=2)
+        nearest_distances = distances[:, 1]
+        nearest_distances = nearest_distances[
+            np.isfinite(nearest_distances) & (nearest_distances > 0)
+        ]
+        if nearest_distances.size == 0:
+            return np.empty((0, 2), dtype=np.int64)
+        edge_distance = float(np.min(nearest_distances))
+    else:
+        edge_distance = float(edge_distance)
+        if not np.isfinite(edge_distance) or edge_distance <= 0:
+            raise ValueError("edge_distance must be a positive finite number.")
+
+    radius = edge_distance * (1.0 + edge_tolerance)
+    pairs = sorted(tree.query_pairs(radius))
+    if not pairs:
+        return np.empty((0, 2), dtype=np.int64)
+    return np.asarray(pairs, dtype=np.int64)
+
+
+def _edge_trace_2d(
+        points: NDArray[np.float64],
+        edges: NDArray[np.int64],
+) -> go.Scatter:
+    x_values: list[float | None] = []
+    y_values: list[float | None] = []
+    for left, right in edges:
+        x_values.extend([points[left, 0], points[right, 0], None])
+        y_values.extend([points[left, 1], points[right, 1], None])
+    return go.Scatter(
+        x=x_values,
+        y=y_values,
+        mode="lines",
+        line=dict(color="rgba(90, 90, 90, 0.35)", width=1),
+        hoverinfo="skip",
+        showlegend=False,
+        name="lattice edges",
+    )
+
+
 # =========================
 # System-specific plotters
 # =========================
@@ -291,28 +347,144 @@ def graph_independent_system(
     )
 
 
+def graph_euclidean_system(
+        grid_points: NDArray[np.float64],
+        spin_states: NDArray[np.bool_] | None = None,
+        fig_title: str = "",
+        show_edges: bool = False,
+        edge_distance: float | None = None,
+        edge_tolerance: float = 1e-6,
+        plot_figure: bool = True,
+):
+    """Plot a Euclidean grid in 1D, 2D, or 3D using the first three coordinates."""
+    pts = np.asarray(grid_points, dtype=float)
+    if pts.ndim != 2:
+        raise ValueError("grid_points must be a 2D array.")
+    if spin_states is None:
+        spins = None
+        labels = np.full(pts.shape[0], "site", dtype=object)
+        color_map = {"site": "#5f6673"}
+    else:
+        spins = np.asarray(spin_states, dtype=bool).ravel()
+        if len(spins) != pts.shape[0]:
+            raise ValueError("len(spin_states) must equal grid_points.shape[0].")
+        labels = np.empty(spins.shape[0], dtype=object)
+        labels[spins] = "A"
+        labels[~spins] = "B"
+        color_map = {"A": "yellow", "B": "blue"}
+
+    if pts.shape[1] == 1:
+        state_value = np.zeros(pts.shape[0]) if spins is None else spins.astype(int)
+        data = pd.DataFrame(
+            {"x": pts[:, 0], "state_value": state_value, "state": labels}
+        )
+        fig = px.scatter(
+            data,
+            x="x",
+            y="state_value",
+            color="state",
+            color_discrete_map=color_map,
+            title=fig_title,
+        )
+        fig.update_yaxes(visible=False)
+    elif pts.shape[1] == 2:
+        data = pd.DataFrame({"x": pts[:, 0], "y": pts[:, 1], "state": labels})
+        fig = go.Figure()
+        if show_edges:
+            edges = _infer_2d_lattice_edges(
+                pts,
+                edge_distance=edge_distance,
+                edge_tolerance=edge_tolerance,
+            )
+            if edges.size:
+                fig.add_trace(_edge_trace_2d(pts, edges))
+        for state in sorted(data["state"].unique()):
+            state_data = data[data["state"] == state]
+            fig.add_trace(
+                go.Scatter(
+                    x=state_data["x"],
+                    y=state_data["y"],
+                    mode="markers",
+                    name=str(state),
+                    marker=dict(
+                        color=color_map.get(state, "#5f6673"),
+                        size=8,
+                        line=dict(width=0),
+                    ),
+                )
+            )
+        fig.update_layout(title=fig_title)
+        fig.update_yaxes(scaleanchor="x", scaleratio=1)
+    else:
+        data = pd.DataFrame(
+            {"x": pts[:, 0], "y": pts[:, 1], "z": pts[:, 2], "state": labels}
+        )
+        fig = px.scatter_3d(
+            data,
+            x="x",
+            y="y",
+            z="z",
+            color="state",
+            color_discrete_map=color_map,
+            title=fig_title,
+        )
+        fig.update_layout(scene=dict(aspectmode="data"))
+
+    fig.update_traces(marker=dict(size=4, line=dict(width=0)), selector=dict(mode="markers"))
+    fig.update_layout(template="plotly_white", margin=dict(l=0, r=0, t=60, b=0))
+    if plot_figure:
+        fig.show()
+    else:
+        return fig
+
+
 # =========================
-# Unified wrapper (3 types)
+# Unified wrapper
 # =========================
 
 
 def plot_spin_system(
-        system_type: str | SystemType,
+        *,
+        system_config: SystemConfig,
         grid_points: NDArray[np.float64],
-        spin_states: NDArray[np.bool_],
+        spin_states: NDArray[np.bool_] | None,
         fig_title: str = "",
         rotate: bool = False,
+        show_edges: bool = False,
+        edge_distance: float | None = None,
+        edge_tolerance: float = 1e-6,
         plot_figure: bool = True,
 ):
     """
-    Dispatcher for three system types:
+    Dispatcher for inverse, independent, non-antipodal, and Euclidean systems:
       - 'INVERSE'       → single spin, antipodal
       - 'INDEPENDENT'   → two spins [A,B], antipodal
       - 'NONANTIPODAL'  → single spin, no antipodal
     """
-    st = SystemType(system_type)
+    if system_config.geometry == Geometry.EUCLIDEAN:
+        return graph_euclidean_system(
+            grid_points,
+            spin_states,
+            fig_title=fig_title,
+            show_edges=show_edges,
+            edge_distance=edge_distance,
+            edge_tolerance=edge_tolerance,
+            plot_figure=plot_figure,
+        )
 
-    if st is SystemType.INVERSE:
+    if spin_states is None:
+        raise RuntimeError("Spin state is required for spherical system plots.")
+
+    if system_config.constraint == ConstraintModel.INDEPENDENT:
+        return graph_independent_system(
+            grid_points,
+            spin_states,
+            fig_title=fig_title,
+            rotate=rotate,
+            plot_figure=plot_figure,
+        )
+
+    if system_config.antipodal:
         return graph_system(
             grid_points,
             spin_states,
@@ -322,26 +494,14 @@ def plot_spin_system(
             plot_figure=plot_figure,
         )
 
-    if st is SystemType.INDEPENDENT:
-        return graph_independent_system(
-            grid_points,
-            spin_states,
-            fig_title=fig_title,
-            rotate=rotate,
-            plot_figure=plot_figure,
-        )
-
-    if st is SystemType.NON_ANTIPODAL:
-        return graph_system(
-            grid_points,
-            spin_states,
-            fig_title=fig_title,
-            antipodal=False,
-            rotate=rotate,
-            plot_figure=plot_figure,
-        )
-
-    raise ValueError(f"Unknown system_type: {system_type}")
+    return graph_system(
+        grid_points,
+        spin_states,
+        fig_title=fig_title,
+        antipodal=False,
+        rotate=rotate,
+        plot_figure=plot_figure,
+    )
 
 
 # ==================

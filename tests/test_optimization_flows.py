@@ -5,9 +5,10 @@ import unittest
 
 import numpy as np
 
-import refactoredpc as rf
-import refactoredpc.annealing as annealing_module
-from refactoredpc.engines import get_engine
+import grasshopper as gh
+import grasshopper.annealing as annealing_module
+import grasshopper.greedy as greedy_module
+from grasshopper.engines import get_engine
 
 from tests.helpers import (
     assert_fixed_density_consistent,
@@ -27,14 +28,14 @@ class OptimizationFlowTests(unittest.TestCase):
     def setUp(self) -> None:
         np.random.seed(12345)
 
-    def make_inverse_system(self) -> rf.System:
-        system = rf.System.inverse(spherical_grid())
+    def make_inverse_system(self) -> gh.System:
+        system = gh.System.inverse(spherical_grid())
         system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         system.array_init(np.array([True, False, True], dtype=bool))
         return system
 
-    def make_independent_system(self) -> rf.System:
-        system = rf.System.independent(spherical_grid())
+    def make_independent_system(self) -> gh.System:
+        system = gh.System.independent(spherical_grid())
         system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         system.array_init(
             np.array(
@@ -48,16 +49,16 @@ class OptimizationFlowTests(unittest.TestCase):
         )
         return system
 
-    def make_non_antipodal_system(self) -> rf.System:
-        system = rf.System.non_antipodal(spherical_grid())
+    def make_non_antipodal_system(self) -> gh.System:
+        system = gh.System.non_antipodal(spherical_grid())
         system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         system.array_init(
             np.array([True, False, True, False, True, False], dtype=bool)
         )
         return system
 
-    def make_euclidean_system(self) -> rf.System:
-        system = rf.System.euclidean(euclidean_grid(), num_spins=2)
+    def make_euclidean_system(self) -> gh.System:
+        system = gh.System.euclidean(euclidean_grid(), num_spins=2)
         system.compute_neighborhood(jump_distance=1.0, silent=True)
         system.array_init(np.array([True, False, True, False], dtype=bool))
         return system
@@ -66,7 +67,7 @@ class OptimizationFlowTests(unittest.TestCase):
         system = self.make_inverse_system()
         system.temperature = 1.0
 
-        with mock.patch("refactoredpc.annealing.metropolis_sweep", return_value=0.0):
+        with mock.patch("grasshopper.annealing.metropolis_sweep", return_value=0.0):
             final_temperature = system.thermalize(
                 target_acceptance=0.5,
                 tolerance=0.0,
@@ -77,16 +78,33 @@ class OptimizationFlowTests(unittest.TestCase):
         self.assertNotEqual(final_temperature, 1.0)
         self.assertEqual(system.temperature, final_temperature)
 
+    def test_thermalize_seed_does_not_consume_global_rng(self) -> None:
+        system = self.make_inverse_system()
+        np.random.seed(999)
+        expected_next = np.random.random()
+        np.random.seed(999)
+
+        with mock.patch("grasshopper.annealing.metropolis_sweep", return_value=0.0):
+            system.thermalize(
+                target_acceptance=0.5,
+                tolerance=0.0,
+                steps_per_temp=1,
+                max_adjustments=1,
+                seed=222,
+            )
+
+        self.assertEqual(np.random.random(), expected_next)
+
     def test_metropolis_sweep_uses_spinflip_numba_hook_for_inverse(self) -> None:
         system = self.make_inverse_system()
         engine = get_engine(system.config)
         energy_array = engine.grid_gen(system.current_system, system.neighborhood)
 
         with mock.patch(
-            "refactoredpc.annealing.run_fixed_density_numba_sweep",
+            "grasshopper.annealing.run_fixed_density_numba_sweep",
             return_value=None,
         ), mock.patch(
-            "refactoredpc.annealing.run_spinflip_numba_sweep",
+            "grasshopper.annealing.run_spinflip_numba_sweep",
             return_value=0.25,
         ) as accelerated:
             acceptance = annealing_module.metropolis_sweep(
@@ -118,6 +136,23 @@ class OptimizationFlowTests(unittest.TestCase):
         self.assertAlmostEqual(system.current_energy, exact_energy(system))
         self.assertEqual(system.temperature, 0.5)
 
+    def test_anneal_seed_does_not_consume_global_rng(self) -> None:
+        system = self.make_inverse_system()
+        np.random.seed(777)
+        expected_next = np.random.random()
+        np.random.seed(777)
+
+        system.anneal(
+            starting_temp=1.0,
+            final_temp=0.5,
+            cooling_rate=0.5,
+            max_iterations=1,
+            steps=1,
+            seed=123,
+        )
+
+        self.assertEqual(np.random.random(), expected_next)
+
     def test_greedy_runs_for_all_supported_engines(self) -> None:
         systems = [
             self.make_inverse_system(),
@@ -128,13 +163,35 @@ class OptimizationFlowTests(unittest.TestCase):
 
         for system in systems:
             result = system.greedy(max_steps=3, reinit=True)
-            self.assertIsInstance(result, rf.GreedyResult)
+            self.assertIsInstance(result, gh.GreedyResult)
             self.assertEqual(system.greedy_history.runs, 1)
             self.assertEqual(len(system.greedy_history.records), 1)
             self.assertEqual(system.greedy_history.records[0].steps, result.steps)
             self.assertAlmostEqual(system.current_energy, exact_energy(system))
             if not system.antipodal:
                 assert_fixed_density_consistent(self, system)
+
+    def test_greedy_reinit_only_recomputes_at_start_and_end(self) -> None:
+        system = self.make_inverse_system()
+
+        with mock.patch(
+            "grasshopper.greedy._recompute_energy_state",
+            wraps=greedy_module._recompute_energy_state,
+        ) as recompute:
+            system.greedy(max_steps=3, reinit=True)
+
+        self.assertEqual(recompute.call_count, 2)
+
+    def test_greedy_default_reinit_is_false(self) -> None:
+        system = self.make_inverse_system()
+
+        with mock.patch(
+            "grasshopper.greedy._recompute_energy_state",
+            wraps=greedy_module._recompute_energy_state,
+        ) as recompute:
+            system.greedy(max_steps=1)
+
+        self.assertEqual(recompute.call_count, 0)
 
     def test_parallel_temper_serial_keeps_exact_energy_for_euclidean(self) -> None:
         system = self.make_euclidean_system()
@@ -149,7 +206,7 @@ class OptimizationFlowTests(unittest.TestCase):
             seed=123,
         )
 
-        self.assertIsInstance(result, rf.ParallelTemperingResult)
+        self.assertIsInstance(result, gh.ParallelTemperingResult)
         self.assertEqual(result.iterations, 2)
         self.assertEqual(len(result.final_energies), 2)
         self.assertEqual(system.anneal_data.iterations, 0)
@@ -182,7 +239,7 @@ class OptimizationFlowTests(unittest.TestCase):
         )
         save_path = system.save(test_dir)
 
-        loaded = rf.System.euclidean(euclidean_grid(), num_spins=2)
+        loaded = gh.System.euclidean(euclidean_grid(), num_spins=2)
         loaded.load(save_path)
 
         self.assertTrue(np.array_equal(system.current_system, loaded.current_system))

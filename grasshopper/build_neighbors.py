@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import scipy as sci
 from tqdm import tqdm
+from collections.abc import Callable
 
 from .core import Neighborhood, NonAntipodalNeighborhood
 from .kernels import calculate_contributions, resolve_delta_kernel
@@ -105,7 +106,7 @@ def build_neighborhood(
     grid_points: np.ndarray,
     jump_distance: float,
     antipodal: bool = True,
-    delta: str = "two",
+    delta: str | Callable = "two",
     silent: bool = True,
     distance_metric: DistanceMetric = "spherical",
 ):
@@ -123,7 +124,7 @@ def build_neighborhood(
 def build_antipodal_neighborhood(
     grid_points: np.ndarray,
     jump_distance: float,
-    delta: str = "two",
+    delta: str | Callable = "two",
     silent: bool = True,
     distance_metric: DistanceMetric = "spherical",
 ):
@@ -188,7 +189,7 @@ def build_antipodal_neighborhood(
 def build_nonantipodal_neighborhood(
     grid_points: np.ndarray,
     jump_distance: float,
-    delta: str = "two",
+    delta: str | Callable = "two",
     silent: bool = True,
     distance_metric: DistanceMetric = "spherical",
 ):

@@ -9,6 +9,7 @@ from .spinflip_numba import (
     compute_spinflip_numba_energy_grid,
     run_spinflip_numba_sweep,
 )
+from .rng import Seed, restore_numpy_state, seed_numpy
 
 from typing import TYPE_CHECKING
 
@@ -162,6 +163,7 @@ def thermalize_system(
         max_adjustments: int = 20,
         verbose: bool = False,
         k_p: float = 0.5,  # proportional gain in log(T)
+        seed: Seed = None,
 ) -> float:
     """Thermalize system to reach a target Metropolis acceptance rate.
 
@@ -205,59 +207,63 @@ def thermalize_system(
     if tolerance < 0:
         raise ValueError(f"tolerance must be nonnegative, got {tolerance!r}.")
 
-    engine = get_engine(system.config)
-    grid_gen = engine.grid_gen
+    rng_state = seed_numpy(seed)
+    try:
+        engine = get_engine(system.config)
+        grid_gen = engine.grid_gen
 
-    # Ensure energy_array matches current configuration
-    accelerated_energy = compute_spinflip_numba_energy_grid(
-        system.current_system,
-        system.neighborhood,
-    )
-    energy_array = (
-        accelerated_energy[0]
-        if accelerated_energy is not None
-        else grid_gen(system.current_system, system.neighborhood)
-    )
-
-    # Clamp range for safety
-    min_temp = 1e-6
-    max_temp = 1e6
-
-    for i in range(max_adjustments):
-        T = float(system.temperature)
-
-        # One probe sweep at current T (do NOT track best during thermalization)
-        acceptance = metropolis_sweep(
-            system=system,
-            energy_array=energy_array,
-            T=T,
-            n_steps=steps_per_temp,
-            engine=engine,
-            track_best=False,
+        # Ensure energy_array matches current configuration
+        accelerated_energy = compute_spinflip_numba_energy_grid(
+            system.current_system,
+            system.neighborhood,
+        )
+        energy_array = (
+            accelerated_energy[0]
+            if accelerated_energy is not None
+            else grid_gen(system.current_system, system.neighborhood)
         )
 
-        if verbose:
-            print(
-                f"[thermalize] iter={i}, T={T:.4g}, "
-                f"acceptance={acceptance:.4f}, target={target_acceptance:.4f}, "
-                f"steps={steps_per_temp}"
+        # Clamp range for safety
+        min_temp = 1e-6
+        max_temp = 1e6
+
+        for i in range(max_adjustments):
+            T = float(system.temperature)
+
+            # One probe sweep at current T (do NOT track best during thermalization)
+            acceptance = metropolis_sweep(
+                system=system,
+                energy_array=energy_array,
+                T=T,
+                n_steps=steps_per_temp,
+                engine=engine,
+                track_best=False,
             )
 
-        # Check if we are within the target band
-        if abs(acceptance - target_acceptance) <= tolerance:
-            break
+            if verbose:
+                print(
+                    f"[thermalize] iter={i}, T={T:.4g}, "
+                    f"acceptance={acceptance:.4f}, target={target_acceptance:.4f}, "
+                    f"steps={steps_per_temp}"
+                )
 
-        # Log-space proportional update:
-        #   log T_{new} = log T_{old} - k_p * (acc - target)
-        # so if acc > target, T goes down; if acc < target, T goes up.
-        log_T = np.log(max(T, min_temp))
-        log_T_new = log_T - k_p * (acceptance - target_acceptance)
-        T_new = float(np.exp(log_T_new))
+            # Check if we are within the target band
+            if abs(acceptance - target_acceptance) <= tolerance:
+                break
 
-        # Clamp to a sane range
-        system.temperature = float(np.clip(T_new, min_temp, max_temp))
+            # Log-space proportional update:
+            #   log T_{new} = log T_{old} - k_p * (acc - target)
+            # so if acc > target, T goes down; if acc < target, T goes up.
+            log_T = np.log(max(T, min_temp))
+            log_T_new = log_T - k_p * (acceptance - target_acceptance)
+            T_new = float(np.exp(log_T_new))
 
-    return float(system.temperature)
+            # Clamp to a sane range
+            system.temperature = float(np.clip(T_new, min_temp, max_temp))
+
+        return float(system.temperature)
+    finally:
+        restore_numpy_state(rng_state)
 
 
 def simulated_annealing(
@@ -268,6 +274,7 @@ def simulated_annealing(
         save_interval: int = 1,
         verbose: bool = False,
         reinit: bool = False,
+        seed: Seed = None,
 ) -> None:
     """Main simulated annealing loop.
 
@@ -291,80 +298,84 @@ def simulated_annealing(
     _require_annealable(system)
     _validate_schedule(schedule, save_interval=save_interval)
 
-    engine = get_engine(system.config)
-    grid_gen = engine.grid_gen
+    rng_state = seed_numpy(seed)
+    try:
+        engine = get_engine(system.config)
+        grid_gen = engine.grid_gen
 
-    # Build initial energy grid consistent with current_system
-    if reinit:
-        energy_array = _recompute_energy_state(system, engine)
-    else:
-        accelerated_energy = compute_spinflip_numba_energy_grid(
-            system.current_system,
-            system.neighborhood,
-        )
-        energy_array = (
-            accelerated_energy[0]
-            if accelerated_energy is not None
-            else grid_gen(system.current_system, system.neighborhood)
-        )
-
-    start_time = time.time()
-    acc = 1.0
-    iterations_run = 0
-    temperature = float(schedule.starting_temp)
-    system.temperature = max(float(temperature), 1e-12)
-    steps = int(schedule.starting_steps)
-    while (
-            temperature > schedule.final_temp
-            and iterations_run < schedule.max_iterations
-            and (time.time() - start_time) / 60 ** 2
-            < schedule.max_runtime_hours
-            and acc > schedule.min_acceptance
-    ):
-        T = temperature
-        n_steps = steps
-
-        acc = metropolis_sweep(
-            system=system,
-            energy_array=energy_array,
-            T=T,
-            n_steps=n_steps,
-            engine=engine,
-            track_best=True,
-        )
-
-        # Log stats
-        if verbose:
-            print(
-                f"[anneal] iter={system.anneal_data.iterations}, T={T:.4g}, "
-                f"acceptance={acc:.4g}, "
-                f"steps={n_steps}"
-            )
-        # Cooling schedule
-
-        steps = max(
-            1,
-            int(steps / schedule.cooling_rate),
-        )
-        temperature *= schedule.cooling_rate
-        system.temperature = max(float(temperature), 1e-12)
-        system.anneal_data.iterations += 1
-        iterations_run += 1
+        # Build initial energy grid consistent with current_system
         if reinit:
             energy_array = _recompute_energy_state(system, engine)
-        system.anneal_data.append_record(
-            temperature=float(T),
-            steps=int(n_steps),
-            acceptance_rate=float(acc),
-            current_energy=float(system.current_energy),
-            best_energy=float(system.best_energy),
-        )
+        else:
+            accelerated_energy = compute_spinflip_numba_energy_grid(
+                system.current_system,
+                system.neighborhood,
+            )
+            energy_array = (
+                accelerated_energy[0]
+                if accelerated_energy is not None
+                else grid_gen(system.current_system, system.neighborhood)
+            )
 
-        # Periodic save
-        if save_path is not None and iterations_run % save_interval == 0:
+        start_time = time.time()
+        acc = 1.0
+        iterations_run = 0
+        temperature = float(schedule.starting_temp)
+        system.temperature = max(float(temperature), 1e-12)
+        steps = int(schedule.starting_steps)
+        while (
+                temperature > schedule.final_temp
+                and iterations_run < schedule.max_iterations
+                and (time.time() - start_time) / 60 ** 2
+                < schedule.max_runtime_hours
+                and acc > schedule.min_acceptance
+        ):
+            T = temperature
+            n_steps = steps
+
+            acc = metropolis_sweep(
+                system=system,
+                energy_array=energy_array,
+                T=T,
+                n_steps=n_steps,
+                engine=engine,
+                track_best=True,
+            )
+
+            # Log stats
+            if verbose:
+                print(
+                    f"[anneal] iter={system.anneal_data.iterations}, T={T:.4g}, "
+                    f"acceptance={acc:.4g}, "
+                    f"steps={n_steps}"
+                )
+            # Cooling schedule
+
+            steps = max(
+                1,
+                int(steps / schedule.cooling_rate),
+            )
+            temperature *= schedule.cooling_rate
+            system.temperature = max(float(temperature), 1e-12)
+            system.anneal_data.iterations += 1
+            iterations_run += 1
+            if reinit:
+                energy_array = _recompute_energy_state(system, engine)
+            system.anneal_data.append_record(
+                temperature=float(T),
+                steps=int(n_steps),
+                acceptance_rate=float(acc),
+                current_energy=float(system.current_energy),
+                best_energy=float(system.best_energy),
+            )
+
+            # Periodic save
+            if save_path is not None and iterations_run % save_interval == 0:
+                system.save(save_path)
+
+        # Final save
+        system.temperature = max(float(temperature), 1e-12)
+        if save_path is not None:
             system.save(save_path)
-
-    # Final save
-    system.temperature = max(float(temperature), 1e-12)
-    if save_path is not None:
-        system.save(save_path)
+    finally:
+        restore_numpy_state(rng_state)
