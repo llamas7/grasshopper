@@ -263,6 +263,301 @@ def _edge_trace_2d(
     )
 
 
+def _finite_voronoi_regions_2d(
+        points: NDArray[np.float64],
+        *,
+        radius: float,
+) -> tuple[list[list[int]], NDArray[np.float64]]:
+    voronoi = sci.spatial.Voronoi(points)
+    new_regions: list[list[int]] = []
+    new_vertices = voronoi.vertices.tolist()
+    center = voronoi.points.mean(axis=0)
+    all_ridges: dict[int, list[tuple[int, int, int]]] = {}
+
+    for (left_point, right_point), (left_vertex, right_vertex) in zip(
+        voronoi.ridge_points,
+        voronoi.ridge_vertices,
+    ):
+        all_ridges.setdefault(int(left_point), []).append(
+            (int(right_point), int(left_vertex), int(right_vertex))
+        )
+        all_ridges.setdefault(int(right_point), []).append(
+            (int(left_point), int(left_vertex), int(right_vertex))
+        )
+
+    for point_index, region_index in enumerate(voronoi.point_region):
+        vertices = voronoi.regions[region_index]
+        if vertices and all(vertex >= 0 for vertex in vertices):
+            new_regions.append([int(vertex) for vertex in vertices])
+            continue
+
+        new_region = [int(vertex) for vertex in vertices if vertex >= 0]
+        for other_point, left_vertex, right_vertex in all_ridges.get(point_index, []):
+            if left_vertex >= 0 and right_vertex >= 0:
+                continue
+            finite_vertex = left_vertex if left_vertex >= 0 else right_vertex
+            tangent = voronoi.points[other_point] - voronoi.points[point_index]
+            tangent = tangent / np.linalg.norm(tangent)
+            normal = np.array([-tangent[1], tangent[0]])
+            midpoint = (
+                voronoi.points[point_index] + voronoi.points[other_point]
+            ) / 2.0
+            direction = np.sign(np.dot(midpoint - center, normal)) * normal
+            far_point = voronoi.vertices[finite_vertex] + direction * radius
+            new_vertices.append(far_point.tolist())
+            new_region.append(len(new_vertices) - 1)
+
+        region_points = np.asarray([new_vertices[vertex] for vertex in new_region])
+        region_center = region_points.mean(axis=0)
+        angles = np.arctan2(
+            region_points[:, 1] - region_center[1],
+            region_points[:, 0] - region_center[0],
+        )
+        new_regions.append([new_region[index] for index in np.argsort(angles)])
+
+    return new_regions, np.asarray(new_vertices, dtype=float)
+
+
+def _clip_polygon_halfplane(
+        polygon: list[tuple[float, float]],
+        *,
+        inside,
+        intersect,
+) -> list[tuple[float, float]]:
+    if not polygon:
+        return []
+    output: list[tuple[float, float]] = []
+    previous = polygon[-1]
+    previous_inside = inside(previous)
+    for current in polygon:
+        current_inside = inside(current)
+        if current_inside:
+            if not previous_inside:
+                output.append(intersect(previous, current))
+            output.append(current)
+        elif previous_inside:
+            output.append(intersect(previous, current))
+        previous = current
+        previous_inside = current_inside
+    return output
+
+
+def _clip_polygon_to_box(
+        polygon: NDArray[np.float64],
+        *,
+        xmin: float,
+        xmax: float,
+        ymin: float,
+        ymax: float,
+) -> NDArray[np.float64]:
+    clipped = [(float(x), float(y)) for x, y in polygon]
+
+    def vertical_intersection(x_value: float):
+        def _intersect(start, stop):
+            dx = stop[0] - start[0]
+            if abs(dx) <= np.finfo(float).eps:
+                return (x_value, start[1])
+            t = (x_value - start[0]) / dx
+            return (x_value, start[1] + t * (stop[1] - start[1]))
+
+        return _intersect
+
+    def horizontal_intersection(y_value: float):
+        def _intersect(start, stop):
+            dy = stop[1] - start[1]
+            if abs(dy) <= np.finfo(float).eps:
+                return (start[0], y_value)
+            t = (y_value - start[1]) / dy
+            return (start[0] + t * (stop[0] - start[0]), y_value)
+
+        return _intersect
+
+    clipped = _clip_polygon_halfplane(
+        clipped,
+        inside=lambda point: point[0] >= xmin,
+        intersect=vertical_intersection(xmin),
+    )
+    clipped = _clip_polygon_halfplane(
+        clipped,
+        inside=lambda point: point[0] <= xmax,
+        intersect=vertical_intersection(xmax),
+    )
+    clipped = _clip_polygon_halfplane(
+        clipped,
+        inside=lambda point: point[1] >= ymin,
+        intersect=horizontal_intersection(ymin),
+    )
+    clipped = _clip_polygon_halfplane(
+        clipped,
+        inside=lambda point: point[1] <= ymax,
+        intersect=horizontal_intersection(ymax),
+    )
+    return np.asarray(clipped, dtype=float)
+
+
+def _neighbor_contribution_bins(
+        neighbor_spins: NDArray[np.int_],
+        contributions: NDArray[np.float64],
+) -> dict[int, tuple[int, float]]:
+    neighbor_spins = np.asarray(neighbor_spins, dtype=np.int64)
+    contributions = np.asarray(contributions, dtype=np.float64)
+    if neighbor_spins.size == 0:
+        return {}
+    max_abs_contribution = float(np.max(np.abs(contributions)))
+    bins: dict[int, tuple[int, float]] = {}
+    for neighbor, contribution in zip(neighbor_spins, contributions):
+        weight = (
+            0.0
+            if max_abs_contribution == 0
+            else abs(float(contribution)) / max_abs_contribution
+        )
+        bins[int(neighbor)] = (int(round(weight * 6)), float(contribution))
+    return bins
+
+
+def _sample_colorscale_color(colorscale, weight: float, opacity: float = 0.78) -> str:
+    weight = min(1.0, max(0.0, float(weight)))
+    colors = px.colors.sample_colorscale(colorscale, [weight], colortype="rgb")
+    rgb = colors[0].removeprefix("rgb(").removesuffix(")")
+    return f"rgba({rgb}, {opacity:.3f})"
+
+
+def _append_closed_polygon(
+        groups: dict[str, dict[str, list]],
+        *,
+        key: str,
+        polygon: NDArray[np.float64],
+        hover_text: str,
+) -> None:
+    group = groups.setdefault(key, {"x": [], "y": [], "text": []})
+    closed_polygon = np.vstack([polygon, polygon[0]])
+    group["x"].extend(closed_polygon[:, 0].tolist())
+    group["x"].append(None)
+    group["y"].extend(closed_polygon[:, 1].tolist())
+    group["y"].append(None)
+    group["text"].extend([hover_text] * len(closed_polygon))
+    group["text"].append(None)
+
+
+def _voronoi_cell_traces_2d(
+        points: NDArray[np.float64],
+        *,
+        padding_distance: float,
+        spin_labels: NDArray[np.object_] | None = None,
+        spin_color_map: dict | None = None,
+        selected_site: int | None = None,
+        selected_neighbor_spins: NDArray[np.int_] | None = None,
+        selected_contributions: NDArray[np.float64] | None = None,
+) -> list[go.Scatter]:
+    points = np.asarray(points, dtype=float)
+    if points.shape[0] < 3:
+        return []
+
+    mins = points.min(axis=0)
+    maxs = points.max(axis=0)
+    span = maxs - mins
+    max_span = float(max(np.max(span), 1.0))
+    padding_distance = float(padding_distance)
+    xmin, ymin = mins - padding_distance
+    xmax, ymax = maxs + padding_distance
+
+    try:
+        regions, vertices = _finite_voronoi_regions_2d(
+            points,
+            radius=max_span * 4.0 + padding_distance,
+        )
+    except sci.spatial.QhullError:
+        return []
+
+    contribution_by_neighbor = _neighbor_contribution_bins(
+        (
+            np.empty(0, dtype=np.int64)
+            if selected_neighbor_spins is None
+            else selected_neighbor_spins
+        ),
+        (
+            np.empty(0, dtype=np.float64)
+            if selected_contributions is None
+            else selected_contributions
+        ),
+    )
+
+    groups: dict[str, dict[str, list]] = {}
+    group_style: dict[str, tuple[str, str]] = {}
+    for site_index, region in enumerate(regions):
+        polygon = _clip_polygon_to_box(
+            vertices[region],
+            xmin=float(xmin),
+            xmax=float(xmax),
+            ymin=float(ymin),
+            ymax=float(ymax),
+        )
+        if polygon.shape[0] < 3:
+            continue
+
+        if selected_site is not None and site_index == int(selected_site):
+            fillcolor = "rgba(213, 94, 0, 0.40)"
+            name = "selected voronoi cell"
+            hover_text = f"selected site: {site_index}"
+        elif site_index in contribution_by_neighbor:
+            contribution_bin, contribution = contribution_by_neighbor[site_index]
+            fillcolor = _sample_colorscale_color(
+                px.colors.sequential.Cividis,
+                contribution_bin / 6.0,
+            )
+            name = "neighbor contribution cells"
+            hover_text = (
+                f"neighbor site: {site_index}<br>"
+                f"selected site: {selected_site}<br>"
+                f"correlation: {contribution:.6g}"
+            )
+            name = f"{name} {contribution_bin}"
+        elif spin_labels is not None and spin_color_map is not None:
+            state = str(spin_labels[site_index])
+            fillcolor = spin_color_map.get(state, "rgba(95, 102, 115, 0.18)")
+            name = f"voronoi {state}"
+            hover_text = f"site: {site_index}<br>state: {state}"
+        else:
+            fillcolor = "rgba(95, 102, 115, 0.12)"
+            name = "voronoi cells"
+            hover_text = f"site: {site_index}"
+
+        group_style[name] = (fillcolor, name)
+        _append_closed_polygon(
+            groups,
+            key=name,
+            polygon=polygon,
+            hover_text=hover_text,
+        )
+
+    traces: list[go.Scatter] = []
+    for key, group in groups.items():
+        fillcolor, name = group_style[key]
+        display_name = "neighbor contribution cells" if name.startswith(
+            "neighbor contribution cells"
+        ) else name
+        if display_name.startswith("voronoi ") and display_name != "voronoi cells":
+            display_name = display_name.removeprefix("voronoi ")
+        traces.append(
+            go.Scatter(
+                x=group["x"],
+                y=group["y"],
+                mode="lines",
+                fill="toself",
+                fillcolor=fillcolor,
+                line=dict(color="rgba(95, 102, 115, 0.28)", width=0.75),
+                hoverinfo="text",
+                text=group["text"],
+                name=display_name,
+                showlegend=display_name != "neighbor contribution cells"
+                or not any(
+                    trace.name == "neighbor contribution cells" for trace in traces
+                ),
+            )
+        )
+    return traces
+
+
 # =========================
 # System-specific plotters
 # =========================
@@ -354,12 +649,20 @@ def graph_euclidean_system(
         show_edges: bool = False,
         edge_distance: float | None = None,
         edge_tolerance: float = 1e-6,
+        selected_site: int | None = None,
+        selected_neighbor_spins: NDArray[np.int_] | None = None,
+        selected_contributions: NDArray[np.float64] | None = None,
+        voronoi_padding_distance: float | None = None,
         plot_figure: bool = True,
 ):
     """Plot a Euclidean grid in 1D, 2D, or 3D using the first three coordinates."""
     pts = np.asarray(grid_points, dtype=float)
     if pts.ndim != 2:
         raise ValueError("grid_points must be a 2D array.")
+    if voronoi_padding_distance is not None:
+        voronoi_padding_distance = float(voronoi_padding_distance)
+        if voronoi_padding_distance < 0:
+            raise ValueError("voronoi_padding_distance must be nonnegative.")
     if spin_states is None:
         spins = None
         labels = np.full(pts.shape[0], "site", dtype=object)
@@ -390,6 +693,17 @@ def graph_euclidean_system(
     elif pts.shape[1] == 2:
         data = pd.DataFrame({"x": pts[:, 0], "y": pts[:, 1], "state": labels})
         fig = go.Figure()
+        if voronoi_padding_distance is not None:
+            for trace in _voronoi_cell_traces_2d(
+                pts,
+                padding_distance=voronoi_padding_distance,
+                spin_labels=labels if selected_site is None else None,
+                spin_color_map=color_map if selected_site is None else None,
+                selected_site=selected_site,
+                selected_neighbor_spins=selected_neighbor_spins,
+                selected_contributions=selected_contributions,
+            ):
+                fig.add_trace(trace)
         if show_edges:
             edges = _infer_2d_lattice_edges(
                 pts,
@@ -411,6 +725,24 @@ def graph_euclidean_system(
                         size=8,
                         line=dict(width=0),
                     ),
+                )
+            )
+        if selected_site is not None:
+            selected_point = pts[int(selected_site)]
+            fig.add_trace(
+                go.Scatter(
+                    x=[selected_point[0]],
+                    y=[selected_point[1]],
+                    mode="markers",
+                    marker=dict(
+                        color="#d55e00",
+                        size=15,
+                        symbol="star",
+                        line=dict(color="black", width=1.5),
+                    ),
+                    text=[f"selected site: {int(selected_site)}"],
+                    hoverinfo="text",
+                    name="selected site",
                 )
             )
         fig.update_layout(title=fig_title)
@@ -453,6 +785,10 @@ def plot_spin_system(
         show_edges: bool = False,
         edge_distance: float | None = None,
         edge_tolerance: float = 1e-6,
+        selected_site: int | None = None,
+        selected_neighbor_spins: NDArray[np.int_] | None = None,
+        selected_contributions: NDArray[np.float64] | None = None,
+        voronoi_padding_distance: float | None = None,
         plot_figure: bool = True,
 ):
     """
@@ -469,6 +805,10 @@ def plot_spin_system(
             show_edges=show_edges,
             edge_distance=edge_distance,
             edge_tolerance=edge_tolerance,
+            selected_site=selected_site,
+            selected_neighbor_spins=selected_neighbor_spins,
+            selected_contributions=selected_contributions,
+            voronoi_padding_distance=voronoi_padding_distance,
             plot_figure=plot_figure,
         )
 

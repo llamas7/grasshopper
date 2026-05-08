@@ -258,6 +258,13 @@ if __name__ == "__main__":
 
 In notebooks, `n_workers=1` is the safest default.
 
+A complete square-lattice demonstration using `jump_distance=0.60` is available
+as a runnable script:
+
+```bash
+python examples/parallel_tempering_square_lattice_demo.py
+```
+
 ## Histories
 
 Each optimizer records its own history on the system:
@@ -295,16 +302,16 @@ To load a saved state, rebuild a matching `System` with the same grid and config
 The package includes:
 
 - `system.plot(...)`
-- `system.plot_lattice(...)` for 2D Euclidean regular lattices
+- `system.plot_neighbors(...)` for 2D Euclidean neighbor/correlation views
 - `system.plot_boundary(...)` for spherical systems
 
 For regular 2D lattices:
 
 ```python
 system = gh.System.hexagonal_lattice(16, 16, density=0.5)
-system.plot_lattice(show_edges=True)
-
 system.compute_neighborhood(jump_distance=0.30)
+system.plot_neighbors(selected_site=42)
+
 system.random_init(seed=123)
 system.plot(plot_current=True, show_edges=True)
 ```

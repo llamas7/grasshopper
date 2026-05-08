@@ -596,8 +596,7 @@ class System:
             except KeyError as exc:
                 valid = ", ".join(member.value for member in InteractionModel)
                 raise ValueError(
-                    "Unknown interaction_model "
-                    f"{value!r}. Expected one of: {valid}."
+                    "Unknown interaction_model " f"{value!r}. Expected one of: {valid}."
                 ) from exc
         raise TypeError("interaction_model must be an InteractionModel or string.")
 
@@ -716,9 +715,7 @@ class System:
             )
         jump_distance = float(value)
         if not np.isfinite(jump_distance):
-            raise ValueError(
-                f"jump_distance must be finite, got {value!r}."
-            )
+            raise ValueError(f"jump_distance must be finite, got {value!r}.")
         return jump_distance
 
     @classmethod
@@ -903,10 +900,12 @@ class System:
         )
 
         if self.geometry == Geometry.EUCLIDEAN:
-            self._neighborhood_model.prob_prefactor = calculate_prob_prefactor_euclidean(
-                self.num_spins,
-                self.jump_distance,
-                self.dimension,
+            self._neighborhood_model.prob_prefactor = (
+                calculate_prob_prefactor_euclidean(
+                    self.num_spins,
+                    self.jump_distance,
+                    self.dimension,
+                )
             )
         else:
             self._neighborhood_model.prob_prefactor = calculate_prob_prefactor(
@@ -922,7 +921,9 @@ class System:
                 distance_metric=metric,
                 occupied_sites=self.num_spins,
             )
-            self._neighborhood_model.neighborhood = NonAntipodalNeighborhoodCSR.from_rows(rows)
+            self._neighborhood_model.neighborhood = (
+                NonAntipodalNeighborhoodCSR.from_rows(rows)
+            )
             return
 
         rows = build_neighborhood(
@@ -1202,11 +1203,26 @@ class System:
         show_edges: bool = False,
         edge_distance: float | None = None,
         edge_tolerance: float = 1e-6,
+        voronoi: bool = False,
         plot_figure: bool = True,
     ):
         system_to_plot = self.current_system if plot_current else self.best_system
         if system_to_plot is None and self.geometry != Geometry.EUCLIDEAN:
             self._require_init()
+        voronoi_padding_distance = None
+        if voronoi:
+            if self.geometry != Geometry.EUCLIDEAN or self.dimension != 2:
+                raise ValueError(
+                    "voronoi=True is only available for 2D Euclidean systems."
+                )
+            if system_to_plot is None:
+                raise RuntimeError(
+                    "voronoi=True requires an initialized spin state. "
+                    "Call random_init() or array_init() first."
+                )
+            voronoi_padding_distance = (1.0 / self.num_spins) ** (
+                1.0 / self.dimension
+            ) / 2.0
         return plot_spin_system(
             system_config=self.config,
             grid_points=self.grid,
@@ -1216,27 +1232,49 @@ class System:
             show_edges=show_edges,
             edge_distance=edge_distance,
             edge_tolerance=edge_tolerance,
+            voronoi_padding_distance=voronoi_padding_distance,
             plot_figure=plot_figure,
         )
 
-    def plot_lattice(
+    def plot_neighbors(
         self,
         *,
-        show_edges: bool = True,
-        edge_distance: float | None = None,
-        edge_tolerance: float = 1e-6,
+        selected_site: int,
         plot_figure: bool = True,
     ):
         if self.geometry != Geometry.EUCLIDEAN or self.dimension != 2:
-            raise ValueError("plot_lattice() is only available for 2D Euclidean systems.")
+            raise ValueError(
+                "plot_neighbors() is only available for 2D Euclidean systems."
+            )
+        if isinstance(selected_site, bool) or not isinstance(
+            selected_site, (int, np.integer)
+        ):
+            raise TypeError("selected_site must be an integer.")
+        selected_site = int(selected_site)
+        if selected_site < 0 or selected_site >= len(self.grid):
+            raise ValueError(
+                f"selected_site must be between 0 and {len(self.grid) - 1}, "
+                f"got {selected_site}."
+            )
+        self._require_neighborhood()
+        selected_row = self.neighborhood[selected_site]
+        if not hasattr(selected_row, "neighbor_spins") or not hasattr(
+            selected_row, "contributions"
+        ):
+            raise TypeError(
+                "plot_neighbors(selected_site=...) requires fixed-density "
+                "neighborhood rows with neighbor_spins and contributions."
+            )
+        cell_length = (1.0 / self.num_spins) ** (1.0 / self.dimension)
         return plot_spin_system(
             system_config=self.config,
             grid_points=self.grid,
             spin_states=None,
-            fig_title="Lattice",
-            show_edges=show_edges,
-            edge_distance=edge_distance,
-            edge_tolerance=edge_tolerance,
+            fig_title="Neighbors",
+            selected_site=selected_site,
+            selected_neighbor_spins=selected_row.neighbor_spins,
+            selected_contributions=selected_row.contributions,
+            voronoi_padding_distance=cell_length / 2.0,
             plot_figure=plot_figure,
         )
 
@@ -1297,7 +1335,9 @@ class System:
     def _config_from_dataset_attrs(cls, ds: xr.Dataset) -> SystemConfig:
         return SystemConfig(
             geometry=cls._coerce_geometry(cls._require_dataset_attr(ds, "geometry")),
-            constraint=cls._coerce_constraint(cls._require_dataset_attr(ds, "constraint")),
+            constraint=cls._coerce_constraint(
+                cls._require_dataset_attr(ds, "constraint")
+            ),
             interaction_model=cls._coerce_interaction_model(
                 cls._require_dataset_attr(ds, "interaction_model")
             ),
@@ -1459,15 +1499,13 @@ class System:
             raise ValueError(
                 "Unsupported saved-state format_version "
                 f"{format_version!r}. Expected {self._SAVE_FORMAT_VERSION!r}."
-        )
+            )
 
         saved_config = self._config_from_dataset_attrs(ds)
         saved_delta_raw = self._require_dataset_attr(ds, "delta")
         saved_delta_custom = bool(ds.attrs.get("delta_custom", False))
         saved_delta = (
-            DeltaType.TWO
-            if saved_delta_custom
-            else self._coerce_delta(saved_delta_raw)
+            DeltaType.TWO if saved_delta_custom else self._coerce_delta(saved_delta_raw)
         )
 
         # 1) Validate against current instance (grid must already exist)
@@ -1614,10 +1652,12 @@ class System:
         if self.jump_distance is None:
             self._neighborhood_model.prob_prefactor = 0.0
         elif self.geometry == Geometry.EUCLIDEAN:
-            self._neighborhood_model.prob_prefactor = calculate_prob_prefactor_euclidean(
-                self.num_spins,
-                self.jump_distance,
-                self.dimension,
+            self._neighborhood_model.prob_prefactor = (
+                calculate_prob_prefactor_euclidean(
+                    self.num_spins,
+                    self.jump_distance,
+                    self.dimension,
+                )
             )
         else:
             self._neighborhood_model.prob_prefactor = calculate_prob_prefactor(

@@ -292,10 +292,7 @@ class SystemApiTests(unittest.TestCase):
     def test_regular_lattice_plotting(self) -> None:
         system = gh.System.square_lattice(2, 2)
 
-        lattice_fig = system.plot_lattice(plot_figure=False)
-        self.assertEqual(len(lattice_fig.data), 2)
-        self.assertEqual(lattice_fig.data[0].mode, "lines")
-        self.assertEqual(lattice_fig.data[1].name, "site")
+        self.assertFalse(hasattr(system, "plot_lattice"))
 
         system.compute_neighborhood(jump_distance=1.0, silent=True)
         system.random_init(seed=1)
@@ -303,11 +300,134 @@ class SystemApiTests(unittest.TestCase):
         trace_names = {trace.name for trace in spin_fig.data}
         self.assertIn("A", trace_names)
         self.assertIn("B", trace_names)
+        self.assertNotIn("voronoi A", trace_names)
+        self.assertNotIn("voronoi B", trace_names)
 
-    def test_plot_lattice_requires_2d_euclidean_system(self) -> None:
+    def test_euclidean_plot_voronoi_colors_cells_by_spin_state(self) -> None:
+        system = gh.System.square_lattice(3, 3, num_spins=4)
+        system.compute_neighborhood(jump_distance=1.0, silent=True)
+        system.array_init(
+            np.array(
+                [
+                    True,
+                    False,
+                    True,
+                    False,
+                    True,
+                    False,
+                    True,
+                    False,
+                    False,
+                ],
+                dtype=bool,
+            )
+        )
+
+        fig = system.plot(plot_current=True, voronoi=True, plot_figure=False)
+        trace_names = {trace.name for trace in fig.data}
+
+        self.assertIn("A", trace_names)
+        self.assertIn("B", trace_names)
+        voronoi_a = next(trace for trace in fig.data if trace.name == "A")
+        voronoi_b = next(trace for trace in fig.data if trace.name == "B")
+        self.assertEqual(voronoi_a.fill, "toself")
+        self.assertEqual(voronoi_b.fill, "toself")
+        self.assertIn("state: A", voronoi_a.text[0])
+        self.assertIn("state: B", voronoi_b.text[0])
+
+    def test_voronoi_padding_uses_half_cell_length(self) -> None:
+        system = gh.System.square_lattice(3, 3, num_spins=4)
+        system.compute_neighborhood(jump_distance=1.5, silent=True)
+        system.random_init(seed=1)
+        expected_padding = ((1.0 / system.num_spins) ** (1.0 / system.dimension)) / 2.0
+
+        with mock.patch("grasshopper.system.plot_spin_system") as plot_spin_system:
+            system.plot(plot_current=True, voronoi=True, plot_figure=False)
+            self.assertAlmostEqual(
+                plot_spin_system.call_args.kwargs["voronoi_padding_distance"],
+                expected_padding,
+            )
+
+        with mock.patch("grasshopper.system.plot_spin_system") as plot_spin_system:
+            system.plot_neighbors(selected_site=4, plot_figure=False)
+            self.assertAlmostEqual(
+                plot_spin_system.call_args.kwargs["voronoi_padding_distance"],
+                expected_padding,
+            )
+
+    def test_euclidean_plot_voronoi_requires_initialized_state(self) -> None:
+        system = gh.System.square_lattice(2, 2)
+
+        with self.assertRaisesRegex(RuntimeError, "initialized spin state"):
+            system.plot(voronoi=True, plot_figure=False)
+
+    def test_plot_voronoi_requires_2d_euclidean_system(self) -> None:
+        system = gh.System.inverse(spherical_grid())
+        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        system.hemisphere_init(seed=1)
+
+        with self.assertRaisesRegex(ValueError, "2D Euclidean"):
+            system.plot(voronoi=True, plot_figure=False)
+
+    def test_plot_neighbors_selected_site_colors_cells(self) -> None:
+        system = gh.System.square_lattice(3, 3, num_spins=4)
+        system.compute_neighborhood(
+            jump_distance=1.5,
+            silent=True,
+        )
+
+        fig = system.plot_neighbors(
+            selected_site=4,
+            plot_figure=False,
+        )
+        trace_names = {trace.name for trace in fig.data}
+
+        self.assertIn("voronoi cells", trace_names)
+        self.assertIn("selected voronoi cell", trace_names)
+        self.assertIn("neighbor contribution cells", trace_names)
+        self.assertIn("selected site", trace_names)
+        self.assertNotIn("lattice edges", trace_names)
+        self.assertNotIn("selected-neighbor correlations", trace_names)
+        selected_cell = next(
+            trace for trace in fig.data if trace.name == "selected voronoi cell"
+        )
+        self.assertEqual(selected_cell.fill, "toself")
+        neighbor_cell = next(
+            trace for trace in fig.data if trace.name == "neighbor contribution cells"
+        )
+        self.assertIn("correlation", neighbor_cell.text[0])
+        self.assertIn("rgba(", neighbor_cell.fillcolor)
+
+    def test_plot_neighbors_skips_tiny_grids(self) -> None:
+        grid = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=float)
+        system = gh.System.euclidean(grid, num_spins=1)
+        system.compute_neighborhood(jump_distance=1.0, silent=True)
+
+        fig = system.plot_neighbors(selected_site=0, plot_figure=False)
+        trace_names = {trace.name for trace in fig.data}
+
+        self.assertNotIn("voronoi cells", trace_names)
+        self.assertIn("site", trace_names)
+        self.assertIn("selected site", trace_names)
+
+    def test_plot_neighbors_requires_neighborhood(self) -> None:
+        system = gh.System.square_lattice(2, 2)
+
+        with self.assertRaisesRegex(RuntimeError, "compute_neighborhood"):
+            system.plot_neighbors(selected_site=0, plot_figure=False)
+
+    def test_plot_neighbors_validates_index(self) -> None:
+        system = gh.System.square_lattice(2, 2)
+
+        with self.assertRaisesRegex(ValueError, "between 0 and 3"):
+            system.plot_neighbors(selected_site=4, plot_figure=False)
+        with self.assertRaises(TypeError):
+            system.plot_neighbors(selected_site=True, plot_figure=False)
+
+    def test_plot_neighbors_requires_2d_euclidean_system(self) -> None:
         system = gh.System.inverse(spherical_grid())
         with self.assertRaisesRegex(ValueError, "2D Euclidean"):
-            system.plot_lattice(plot_figure=False)
+            system.plot_neighbors(selected_site=0, plot_figure=False)
 
     def test_explicit_config_constructor_sets_expected_config(self) -> None:
         system = gh.System(euclidean_grid(), config=gh.SystemConfig.euclidean(), num_spins=2)
