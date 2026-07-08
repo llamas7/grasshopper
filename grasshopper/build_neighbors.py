@@ -5,8 +5,8 @@ import scipy as sci
 from tqdm import tqdm
 from collections.abc import Callable
 
-from .core import Neighborhood, NonAntipodalNeighborhood
-from .kernels import calculate_contributions, resolve_delta_kernel
+from .core import KernelSpec, Neighborhood, NonAntipodalNeighborhood
+from .kernels import calculate_contributions, resolve_kernel
 from .metrics import DistanceMetric, resolve_distance_metric, validate_distances
 
 
@@ -14,7 +14,7 @@ def neighbor_pruning(
     search_points: np.ndarray,
     grid_points: np.ndarray,
     jump_distance: float,
-    interaction_spread: float,
+    support_width: float,
     silent: bool = True,
 ):
     """
@@ -31,8 +31,8 @@ def neighbor_pruning(
         raise ValueError("grid_points must have shape (M, 3)")
     if grid_points.shape[0] == 0:
         raise ValueError("grid_points must be non-empty")
-    if interaction_spread < 0:
-        raise ValueError("interaction_spread must be nonnegative")
+    if support_width < 0:
+        raise ValueError("support_width must be nonnegative")
     if not np.isfinite(jump_distance):
         raise ValueError("jump_distance must be finite")
     if not np.all(np.isfinite(search_points)) or not np.all(np.isfinite(grid_points)):
@@ -57,7 +57,7 @@ def neighbor_pruning(
     num_circle_points = max(8, approx_num_circle_points)
     midpoint_offset = abs(ring_radius) * np.sin(np.pi / (2.0 * num_circle_points))
     search_radius = np.sqrt(
-        (interaction_spread * cell_length) ** 2 + midpoint_offset ** 2
+        support_width**2 + midpoint_offset**2
     )
 
     theta = np.linspace(0.0, 2.0 * np.pi, num_circle_points, endpoint=False)[:, None]
@@ -106,7 +106,7 @@ def build_neighborhood(
     grid_points: np.ndarray,
     jump_distance: float,
     antipodal: bool = True,
-    delta: str | Callable = "two",
+    delta: KernelSpec | str | Callable = "cosine",
     silent: bool = True,
     distance_metric: DistanceMetric = "spherical",
 ):
@@ -124,29 +124,35 @@ def build_neighborhood(
 def build_antipodal_neighborhood(
     grid_points: np.ndarray,
     jump_distance: float,
-    delta: str | Callable = "two",
+    delta: KernelSpec | str | Callable = "cosine",
     silent: bool = True,
     distance_metric: DistanceMetric = "spherical",
 ):
-    discrete_function, interaction_spread, exact_scan = resolve_delta_kernel(delta)
-
     num_points = len(grid_points)
     if num_points % 2 != 0:
         raise ValueError("Number of points must be even for antipodal neighborhood.")
     num_spins = num_points // 2
     cell_length = np.sqrt((4 * np.pi) / num_points)
+    resolved_kernel = resolve_kernel(delta, cell_length=cell_length)
+    discrete_function = resolved_kernel.function
     resolved_metric = resolve_distance_metric(distance_metric)
-    jump_distance = float(abs(jump_distance))
-    if resolved_metric.name == "spherical":
-        jump_distance = jump_distance % np.pi
+    jump_distance = float(jump_distance)
+    if not np.isfinite(jump_distance) or jump_distance < 0:
+        raise ValueError("jump_distance must be a nonnegative finite number.")
+    if resolved_metric.name == "spherical" and jump_distance > np.pi:
+        raise ValueError("Spherical jump_distance must lie in [0, pi].")
 
     neighborhood = []
-    if resolved_metric.name == "spherical" and not exact_scan:
+    if (
+        resolved_metric.name == "spherical"
+        and not resolved_kernel.exact_scan_required
+        and resolved_kernel.support_width is not None
+    ):
         pruned_neighborhood = neighbor_pruning(
             grid_points[: len(grid_points) // 2],
             grid_points,
             jump_distance,
-            interaction_spread,
+            resolved_kernel.support_width,
             silent=silent,
         )
     else:
@@ -189,23 +195,33 @@ def build_antipodal_neighborhood(
 def build_nonantipodal_neighborhood(
     grid_points: np.ndarray,
     jump_distance: float,
-    delta: str | Callable = "two",
+    delta: KernelSpec | str | Callable = "cosine",
     silent: bool = True,
     distance_metric: DistanceMetric = "spherical",
 ):
-    discrete_function, interaction_spread, exact_scan = resolve_delta_kernel(delta)
-
     num_spins = len(grid_points)
     cell_length = np.sqrt((4 * np.pi) / num_spins)
+    resolved_kernel = resolve_kernel(delta, cell_length=cell_length)
+    discrete_function = resolved_kernel.function
     resolved_metric = resolve_distance_metric(distance_metric)
-    jump_distance = float(abs(jump_distance))
-    if resolved_metric.name == "spherical":
-        jump_distance = jump_distance % np.pi
+    jump_distance = float(jump_distance)
+    if not np.isfinite(jump_distance) or jump_distance < 0:
+        raise ValueError("jump_distance must be a nonnegative finite number.")
+    if resolved_metric.name == "spherical" and jump_distance > np.pi:
+        raise ValueError("Spherical jump_distance must lie in [0, pi].")
 
     neighborhood = []
-    if resolved_metric.name == "spherical" and not exact_scan:
+    if (
+        resolved_metric.name == "spherical"
+        and not resolved_kernel.exact_scan_required
+        and resolved_kernel.support_width is not None
+    ):
         pruned_neighborhood = neighbor_pruning(
-            grid_points, grid_points, jump_distance, interaction_spread, silent=silent
+            grid_points,
+            grid_points,
+            jump_distance,
+            resolved_kernel.support_width,
+            silent=silent,
         )
     else:
         pruned_neighborhood = [

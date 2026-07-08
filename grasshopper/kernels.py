@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
+
+from .core import KernelSpec
 
 
 EXACT_DELTA_ATOL = 100.0 * np.finfo(float).eps
@@ -13,7 +16,7 @@ def calculate_prob_prefactor(n_points: int, theta: float) -> float:
     return 4 / (np.sin(theta) * n_points ** (3 / 2) * np.sqrt(np.pi))
 
 
-def delta_two(
+def cosine_kernel(
     spin_distance: np.ndarray, cell_length: float
 ) -> tuple[np.ndarray, np.ndarray]:
     r = spin_distance / cell_length
@@ -21,7 +24,7 @@ def delta_two(
     return (1 + np.cos(np.pi * r[r_bool] / 2)) / 4.0, r_bool
 
 
-def delta_one_star(
+def cell_averaged_hat_kernel(
     spin_distance: np.ndarray, cell_length: float
 ) -> tuple[np.ndarray, np.ndarray]:
     def calculate_contributions(r: np.ndarray) -> np.ndarray:
@@ -39,13 +42,13 @@ def delta_one_star(
     return calculate_contributions(r[r_bool]), r_bool
 
 
-def delta_two_star(
+def cell_averaged_cosine_kernel(
     spin_distance: np.ndarray, cell_length: float
 ) -> tuple[np.ndarray, np.ndarray]:
     def calculate_contributions(r: np.ndarray) -> np.ndarray:
         contributions = np.zeros(len(r))
         bool_mask = r <= 1.5
-        contributions[bool_mask] = (1 / 4 * np.pi) * (
+        contributions[bool_mask] = (1 / (4 * np.pi)) * (
             np.pi
             + 2 * np.sin((np.pi / 4) * (2 * r[bool_mask] + 1))
             - 2 * np.sin((np.pi / 4) * (2 * r[bool_mask] - 1))
@@ -72,49 +75,90 @@ def delta_exact(
     return np.ones(np.count_nonzero(interacting), dtype=np.float64), interacting
 
 
-def resolve_delta_kernel(delta: str | Callable) -> tuple[Callable, float, bool]:
-    """Return (kernel function, interaction spread, exact_scan_required)."""
-    if callable(delta):
-        return delta, 2.0, False
+def gaussian_kernel(
+    spin_distance: np.ndarray,
+    cell_length: float,
+    *,
+    sigma: float,
+    cutoff: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``h G_sigma`` weights and their truncation mask."""
+    if cutoff is None:
+        interacting = np.ones(spin_distance.shape, dtype=bool)
+    else:
+        interacting = spin_distance <= cutoff * sigma
+    errors = spin_distance[interacting]
+    normalization = cell_length / (np.sqrt(2.0 * np.pi) * sigma)
+    return normalization * np.exp(-0.5 * (errors / sigma) ** 2), interacting
 
-    raw_delta = getattr(delta, "value", delta)
-    delta_key = str(raw_delta).lower().replace("-", "_")
-    aliases = {
-        "two": "two",
-        "one*": "one_star",
-        "one_star": "one_star",
-        "two*": "two_star",
-        "two_star": "two_star",
-        "delta": "exact",
-        "dirac": "exact",
-        "exact": "exact",
-        "exact_delta": "exact",
-        "real_delta": "exact",
-    }
-    try:
-        canonical = aliases[delta_key]
-    except KeyError as exc:
-        valid = ", ".join(sorted(aliases))
-        raise ValueError(
-            f"Unknown delta {raw_delta!r}. Expected one of: {valid}, or a callable."
-        ) from exc
+
+@dataclass(frozen=True)
+class ResolvedKernel:
+    function: Callable
+    support_width: float | None
+    exact_scan_required: bool
+    spec: KernelSpec | None
+
+
+# Compatibility aliases for the original discrete-delta terminology.
+delta_two = cosine_kernel
+delta_one_star = cell_averaged_hat_kernel
+delta_two_star = cell_averaged_cosine_kernel
+
+
+def resolve_kernel(
+    kernel: KernelSpec | str | Callable,
+    *,
+    cell_length: float,
+) -> ResolvedKernel:
+    """Resolve a kernel and its physical support width."""
+    if callable(kernel) and not isinstance(kernel, KernelSpec):
+        return ResolvedKernel(kernel, 2.0 * cell_length, False, None)
+
+    spec = KernelSpec.from_value(kernel)
     discrete_functions = {
-        "two": delta_two,
-        "one_star": delta_one_star,
-        "two_star": delta_two_star,
+        "cosine": cosine_kernel,
+        "cell_averaged_hat": cell_averaged_hat_kernel,
+        "cell_averaged_cosine": cell_averaged_cosine_kernel,
         "exact": delta_exact,
     }
     interaction_spreads = {
-        "two": 2.0,
-        "one_star": 1.5,
-        "two_star": 2.5,
+        "cosine": 2.0,
+        "cell_averaged_hat": 1.5,
+        "cell_averaged_cosine": 2.5,
         "exact": 0.0,
     }
-    return (
-        discrete_functions[canonical],
-        interaction_spreads[canonical],
-        canonical == "exact",
+    if spec.kind == "gaussian":
+        function = lambda distances, h: gaussian_kernel(
+            distances,
+            h,
+            sigma=float(spec.sigma),
+            cutoff=spec.cutoff,
+        )
+        support_width = (
+            None if spec.cutoff is None else float(spec.cutoff * spec.sigma)
+        )
+        return ResolvedKernel(
+            function=function,
+            support_width=support_width,
+            exact_scan_required=spec.cutoff is None,
+            spec=spec,
+        )
+    return ResolvedKernel(
+        function=discrete_functions[spec.kind],
+        support_width=interaction_spreads[spec.kind] * cell_length,
+        exact_scan_required=spec.kind == "exact",
+        spec=spec,
     )
+
+
+def resolve_delta_kernel(
+    delta: KernelSpec | str | Callable,
+) -> tuple[Callable, float, bool]:
+    """Deprecated resolver returning support in units of a unit cell."""
+    resolved = resolve_kernel(delta, cell_length=1.0)
+    spread = np.inf if resolved.support_width is None else resolved.support_width
+    return resolved.function, float(spread), resolved.exact_scan_required
 
 
 def calculate_contributions(

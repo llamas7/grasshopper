@@ -58,7 +58,7 @@ grid = np.loadtxt("path/to/grid.txt")
 system = gh.System.non_antipodal(grid)
 system.compute_neighborhood(
     jump_distance=0.23 * np.pi,
-    delta="two",
+    kernel=gh.KernelSpec.cosine(),
 )
 system.random_init(seed=123)
 system.thermalize(steps_per_temp=100_000, seed=456)
@@ -70,6 +70,7 @@ system.parallel_temper(
     seed=789,
 )
 system.greedy(reinit=False)
+print(system.best_probability)
 system.save("output/non_antipodal_run.nc")
 ```
 
@@ -152,7 +153,7 @@ Neighborhoods are configured at call time:
 ```python
 system.compute_neighborhood(
     jump_distance=...,
-    delta="two",
+    kernel=gh.KernelSpec.cosine(),
     distance_metric="spherical",
 )
 ```
@@ -166,16 +167,93 @@ Built-in distance metrics:
 
 You can also provide a custom callable metric.
 
-Supported kernel names:
+Built-in kernels are represented by immutable `KernelSpec` objects:
 
-- `"two"`
-- `"one_star"` or `"one*"`
-- `"two_star"` or `"two*"`
-- `"exact"` / `"delta"` / `"dirac"` / `"real_delta"`
+```python
+gh.KernelSpec.cosine()
+gh.KernelSpec.cell_averaged_hat()
+gh.KernelSpec.cell_averaged_cosine()
+gh.KernelSpec.exact()
+gh.KernelSpec.gaussian(sigma=0.05, cutoff=5.0)
+```
 
-Unknown kernel names raise `ValueError` at every API layer. You can also pass a
-custom callable kernel as `delta=...`; it should accept `(distances,
-cell_length)` and return `(contributions, mask)`.
+The compact cosine kernel has support `2h`. The cell-averaged hat kernel is
+the quadratic B-spline obtained by averaging the linear hat function across
+one grid cell and has support `3h/2`. The cell-averaged cosine kernel applies
+the same averaging operation to the compact cosine kernel and has support
+`5h/2`.
+
+The Gaussian width is a physical distance in the same units as
+`jump_distance`. Its default sparse neighborhood truncates the Gaussian at
+five standard deviations. Pass `cutoff=None` to retain the full tail with an
+all-pairs scan.
+
+String kernel names remain accepted through `kernel=`, including `"cosine"`,
+`"cell_averaged_hat"`, `"cell_averaged_cosine"`, and `"exact"`. The former
+names `"two"`, `"one_star"`, and `"two_star"` remain as compatibility aliases,
+and their `KernelSpec` factory methods are deprecated. Unknown names raise
+`ValueError`.
+Custom callable kernels may also be passed through `kernel=...`; they should
+accept `(distance_errors, cell_length)` and return `(contributions, mask)`.
+
+The former `delta=` argument, `system.delta`, and `system.prob_prefactor` are
+deprecated compatibility interfaces.
+
+Jump distances are validated physically: Euclidean distances must be
+nonnegative, and spherical angular distances must lie in `[0, pi]`.
+
+## Energy and probability
+
+Optimization continues to maximize the unnormalized pair energy. Probability
+normalization is applied only when requested:
+
+```python
+system.random_init(seed=123)
+
+p_current = system.current_probability
+p_best = system.best_probability
+p_other = system.probability(other_boolean_state)
+```
+
+These use the continuum Grasshopper functional. For Euclidean fixed-density
+systems with `K` occupied cells in dimension `D`, the compact-kernel
+prefactor is
+
+```text
+2 / (S_D(d) K^(2 - 1/D)).
+```
+
+For spherical systems it uses the geodesic-circle measure
+`2 pi sin(theta)`. Gaussian kernels instead use the corresponding radial
+integral over their implemented, possibly truncated, profile.
+
+Finite grids can also be normalized by their available outgoing interaction
+weight:
+
+```python
+p_graph = system.current_graph_probability
+p_graph_best = system.best_graph_probability
+p_graph_other = system.probability(other_boolean_state, normalization="graph")
+```
+
+Graph normalization is a discretization diagnostic and need not equal the
+continuum-normalized value on a coarse or irregular grid. Probabilities are
+not clamped, so discretization errors remain visible.
+
+Continuum normalization is built in for spherical geodesic distance and
+Euclidean L2 distance. Other metrics require their radial shell measure:
+
+```python
+system.compute_neighborhood(
+    jump_distance=1.0,
+    distance_metric="manhattan",
+    shell_measure=lambda radius: 8.0 * radius,
+    radial_bounds=(0.0, np.inf),
+)
+```
+
+Exact diagnostic and arbitrary callable kernels support graph normalization
+only. Graph normalization also requires nonnegative interaction weights.
 
 ## Initialization
 
@@ -288,14 +366,20 @@ Important persistence note:
 
 - spin state, energies, temperature, and optimizer histories are saved
 - neighborhood construction metadata is saved, including jump distance, kernel,
-  distance metric, probability prefactor, grid shape/dtype, and neighborhood
-  storage summary
+  Gaussian width/cutoff, distance metric, normalization metadata, grid
+  shape/dtype, and neighborhood storage summary
 - Euclidean saved metadata includes both candidate-site count (`site_count`) and
   occupied-site count (`num_spins`)
 - the grid is not saved
 - the neighborhood is not saved
 
-To load a saved state, rebuild a matching `System` with the same grid and configuration, then call `load(...)`. Rebuild the neighborhood afterward if you want to continue optimizing. For saved states that used built-in kernel and distance metric names, `compute_neighborhood()` reuses the loaded jump distance, kernel, and distance metric when you omit them. If the original kernel or metric was a custom callable, pass that callable again with `delta=...` or `distance_metric=...`.
+To load a saved state, rebuild a matching `System` with the same grid and
+configuration, then call `load(...)`. Rebuild the neighborhood afterward if
+you want to continue optimizing. For saved states that used built-in kernels
+and distance metrics, `compute_neighborhood()` reuses the loaded metadata when
+you omit those arguments. If the original kernel, metric, or shell measure was
+a custom callable, pass it again while rebuilding. Format `4.0` is written;
+format `3.0` files are read and their legacy delta metadata is migrated.
 
 ## Plotting
 

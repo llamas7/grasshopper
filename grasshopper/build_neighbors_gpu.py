@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Any, Literal
 
-from .core import Neighborhood, NonAntipodalNeighborhood
+from .core import KernelSpec, Neighborhood, NonAntipodalNeighborhood
 
 try:
     from tqdm import tqdm
@@ -25,7 +25,15 @@ def require_cupy() -> Any:
         )
     return cp
 
-GPUDiscreteDeltaName = Literal["two", "one_star", "two_star"]
+GPUCompactKernelName = Literal[
+    "cosine",
+    "cell_averaged_hat",
+    "cell_averaged_cosine",
+    "two",
+    "one_star",
+    "two_star",
+]
+GPUDiscreteDeltaName = GPUCompactKernelName
 
 
 # ============================================================
@@ -33,7 +41,7 @@ GPUDiscreteDeltaName = Literal["two", "one_star", "two_star"]
 # ============================================================
 
 
-def delta_two_gpu(
+def cosine_kernel_gpu(
     spin_distance_gpu: cp.ndarray,
     cell_length: float,
 ) -> tuple[cp.ndarray, cp.ndarray]:
@@ -47,7 +55,7 @@ def delta_two_gpu(
     return contributions_gpu, valid_mask_gpu
 
 
-def delta_one_star_gpu(
+def cell_averaged_hat_kernel_gpu(
     spin_distance_gpu: cp.ndarray,
     cell_length: float,
 ) -> tuple[cp.ndarray, cp.ndarray]:
@@ -65,7 +73,7 @@ def delta_one_star_gpu(
     return contributions_gpu, valid_mask_gpu
 
 
-def delta_two_star_gpu(
+def cell_averaged_cosine_kernel_gpu(
     spin_distance_gpu: cp.ndarray,
     cell_length: float,
 ) -> tuple[cp.ndarray, cp.ndarray]:
@@ -92,16 +100,24 @@ def delta_two_star_gpu(
     return contributions_gpu, valid_mask_gpu
 
 
-def get_delta_kernel_gpu(
-    delta_name: GPUDiscreteDeltaName,
+def get_compact_kernel_gpu(
+    kernel_name: GPUCompactKernelName,
 ):
-    if delta_name == "two":
-        return delta_two_gpu, 2.0
-    if delta_name == "one_star":
-        return delta_one_star_gpu, 1.5
-    if delta_name == "two_star":
-        return delta_two_star_gpu, 2.5
-    raise ValueError(f"Unknown GPU delta kernel: {delta_name!r}")
+    kind = KernelSpec.from_value(kernel_name).kind
+    if kind == "cosine":
+        return cosine_kernel_gpu, 2.0
+    if kind == "cell_averaged_hat":
+        return cell_averaged_hat_kernel_gpu, 1.5
+    if kind == "cell_averaged_cosine":
+        return cell_averaged_cosine_kernel_gpu, 2.5
+    raise ValueError(f"Unsupported GPU compact kernel: {kernel_name!r}")
+
+
+# Compatibility aliases for the original discrete-delta terminology.
+delta_two_gpu = cosine_kernel_gpu
+delta_one_star_gpu = cell_averaged_hat_kernel_gpu
+delta_two_star_gpu = cell_averaged_cosine_kernel_gpu
+get_delta_kernel_gpu = get_compact_kernel_gpu
 
 
 # ============================================================
@@ -190,7 +206,7 @@ def build_neighborhood_gpu(
     grid_points: np.ndarray,
     jump_distance: float,
     antipodal: bool = True,
-    delta: GPUDiscreteDeltaName = "two",
+    delta: GPUCompactKernelName = "cosine",
     silent: bool = True,
     batch_size: int = 128,
 ) -> list[Neighborhood] | list[NonAntipodalNeighborhood]:
@@ -215,7 +231,7 @@ def build_neighborhood_gpu(
 def build_antipodal_neighborhood_gpu(
     grid_points: np.ndarray,
     jump_distance: float,
-    delta: GPUDiscreteDeltaName = "two",
+    delta: GPUCompactKernelName = "cosine",
     silent: bool = True,
     batch_size: int = 128,
 ) -> list[Neighborhood]:
@@ -232,7 +248,7 @@ def build_antipodal_neighborhood_gpu(
     jump_distance = float(abs(jump_distance) % np.pi)
     cell_length = float(np.sqrt((4.0 * np.pi) / num_points))
 
-    delta_func_gpu, interaction_spread = get_delta_kernel_gpu(delta)
+    delta_func_gpu, interaction_spread = get_compact_kernel_gpu(delta)
     cos_lo, cos_hi = get_support_window_cosines_gpu(
         jump_distance=jump_distance,
         interaction_spread=interaction_spread,
@@ -305,7 +321,7 @@ def build_antipodal_neighborhood_gpu(
 def build_nonantipodal_neighborhood_gpu(
     grid_points: np.ndarray,
     jump_distance: float,
-    delta: GPUDiscreteDeltaName = "two",
+    delta: GPUCompactKernelName = "cosine",
     silent: bool = True,
     batch_size: int = 128,
 ) -> list[NonAntipodalNeighborhood]:
@@ -319,7 +335,7 @@ def build_nonantipodal_neighborhood_gpu(
     jump_distance = float(abs(jump_distance) % np.pi)
     cell_length = float(np.sqrt((4.0 * np.pi) / num_spins))
 
-    delta_func_gpu, interaction_spread = get_delta_kernel_gpu(delta)
+    delta_func_gpu, interaction_spread = get_compact_kernel_gpu(delta)
     cos_lo, cos_hi = get_support_window_cosines_gpu(
         jump_distance=jump_distance,
         interaction_spread=interaction_spread,

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from math import gamma
 
 import numpy as np
 
 from ..kernels import (
     calculate_contributions,
-    resolve_delta_kernel,
+    resolve_kernel,
 )
-from ..core import NonAntipodalNeighborhood
+from ..core import KernelSpec, NonAntipodalNeighborhood
 from ..metrics import DistanceMetric, resolve_distance_metric, validate_distances
 
 try:
@@ -81,23 +82,28 @@ def calculate_prob_prefactor_euclidean(
     n_points: int,
     jump_distance: float,
     dim: int,
-    *,
-    constant: float = 1.0,
 ) -> float:
     """
     Probability prefactor for Euclidean systems.
 
     At the `System` layer, `n_points` is the number of occupied sites
     (`system.num_spins`), not the total number of candidate lattice sites.
-    The total occupied volume is fixed to 1.0. The exact physical constant is
-    model-dependent; this keeps the placeholder scaling explicit and
-    centralized.
+    The total occupied volume is fixed to 1.0 and the kernel is interpreted as
+    a one-dimensional delta regularization in radial distance.
     """
     if n_points <= 0:
         raise ValueError("n_points must be positive")
     if dim <= 0:
         raise ValueError("dim must be positive")
-    return float(constant / n_points)
+    if not np.isfinite(jump_distance) or jump_distance <= 0:
+        raise ValueError("jump_distance must be positive and finite.")
+    sphere_area = (
+        2.0
+        * np.pi ** (dim / 2.0)
+        * jump_distance ** (dim - 1)
+        / gamma(dim / 2.0)
+    )
+    return float(2.0 / (sphere_area * n_points ** (2.0 - 1.0 / dim)))
 
 
 def _resolve_occupied_site_count(
@@ -170,7 +176,7 @@ def _ball_pruned_indices(
 def build_euclidean_neighborhood(
     grid_points: np.ndarray,
     jump_distance: float,
-    delta: str | Callable = "two",
+    delta: KernelSpec | str | Callable = "cosine",
     silent: bool = True,
     distance_metric: DistanceMetric = "euclidean",
     occupied_sites: int | None = None,
@@ -194,8 +200,6 @@ def build_euclidean_neighborhood(
     if grid_points.ndim != 2 or grid_points.shape[0] == 0:
         raise ValueError("grid_points must be a non-empty 2D array")
 
-    discrete_function, interaction_spread, exact_scan = resolve_delta_kernel(delta)
-
     site_count = int(grid_points.shape[0])
     dim = int(grid_points.shape[1])
     occupied_site_count = _resolve_occupied_site_count(
@@ -203,14 +207,24 @@ def build_euclidean_neighborhood(
         site_count=site_count,
     )
     cell_length = (1.0 / occupied_site_count) ** (1.0 / dim)
+    resolved_kernel = resolve_kernel(delta, cell_length=cell_length)
+    discrete_function = resolved_kernel.function
 
-    jump_distance = float(abs(jump_distance))
-    width = interaction_spread * cell_length
+    jump_distance = float(jump_distance)
+    if not np.isfinite(jump_distance) or jump_distance < 0:
+        raise ValueError("jump_distance must be a nonnegative finite number.")
+    width = resolved_kernel.support_width
+    if width is None:
+        width = 0.0
     radius = jump_distance + width
 
     resolved_metric = resolve_distance_metric(distance_metric)
     grid_tree = None
-    if resolved_metric.kd_tree_p is not None and not exact_scan:
+    if (
+        resolved_metric.kd_tree_p is not None
+        and not resolved_kernel.exact_scan_required
+        and resolved_kernel.support_width is not None
+    ):
         import scipy as sci
 
         grid_tree = sci.spatial.cKDTree(grid_points)

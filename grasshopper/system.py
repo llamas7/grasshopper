@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -19,6 +20,7 @@ from .core import (
     Geometry,
     GreedyHistory,
     InteractionModel,
+    KernelSpec,
     NeighborhoodModel,
     NeighborhoodData,
     NonAntipodalNeighborhoodCSR,
@@ -33,10 +35,8 @@ from .core import (
 from .euclidean import (
     DistanceMetric,
     build_euclidean_neighborhood,
-    calculate_prob_prefactor_euclidean,
     normalize_euclidean_grid,
 )
-from .kernels import calculate_prob_prefactor
 from .lattices import (
     hexagonal_lattice,
     rectangular_lattice,
@@ -53,8 +53,10 @@ from .initialization import (
     init_triangle_cogwheel,
 )
 from .greedy import GreedyResult, greedy_optimization
+from .engines import get_engine
 from .parallel_tempering import ParallelTemperingResult, parallel_tempering
 from .plot_system import plot_spin_system, graph_boundary
+from .probability import calculate_probability, continuum_probability_prefactor
 
 
 class System:
@@ -89,9 +91,9 @@ class System:
        prepares optimization history containers.
 
     2. **Neighborhood construction**
-       Call `compute_neighborhood(jump_distance=..., delta=...)`. This builds
-       the adjacency list used by all Metropolis updates and also sets the
-       probability prefactor needed for computing Boltzmann factors.
+       Call `compute_neighborhood(jump_distance=..., kernel=...)`. This builds
+       the adjacency list used by all Metropolis updates and stores the
+       metadata needed for continuum and graph probability normalization.
 
     3. **Initialization**
        Choose one of:
@@ -134,9 +136,8 @@ class System:
     config : SystemConfig
         Canonical orthogonal description of the system geometry,
         constraint model, interaction model, and update rule.
-    delta : DeltaType
-        Last interaction kernel used for neighborhood construction. Prefer
-        passing this to `compute_neighborhood()`.
+    kernel : KernelSpec or callable
+        Last interaction kernel used for neighborhood construction.
     num_spins : int | None
         For Euclidean systems, the number of occupied sites to initialize and
         preserve during fixed-density updates, and the count that determines
@@ -151,8 +152,6 @@ class System:
         Tracks whether spin configuration has been initialized.
     neighborhood : NeighborhoodData
         Precomputed adjacency list for every lattice site.
-    prob_prefactor : float
-        Multiplicative factor used in Boltzmann probability calculations.
     num_spins : int
         Number of logical spins. For Euclidean systems this is the occupied-site
         count; for antipodal systems it is N/2.
@@ -172,11 +171,14 @@ class System:
     -----
     - You must call `compute_neighborhood(jump_distance=...)` before initializing spins.
     - You must initialize spins before calling `anneal()` or `thermalize()`.
+    - Optimization energies remain unnormalized. Use `probability()` or the
+      probability properties when a normalized Grasshopper value is required.
     - Saving includes spin configurations and annealing metadata, but does NOT
       include the grid itself; the same grid must exist on the object before `load()`.
     """
 
-    _SAVE_FORMAT_VERSION = "3.0"
+    _SAVE_FORMAT_VERSION = "4.0"
+    _SUPPORTED_SAVE_FORMAT_VERSIONS = {"3.0", "4.0"}
 
     def __init__(
         self,
@@ -198,8 +200,8 @@ class System:
             num_spins=num_spins,
         )
         self._neighborhood_model = NeighborhoodModel(
-            delta=DeltaType.TWO,
-            delta_is_custom=False,
+            kernel=KernelSpec.cosine(),
+            kernel_is_custom=False,
             jump_distance=None,
             distance_metric=None,
             distance_metric_is_custom=False,
@@ -421,7 +423,7 @@ class System:
             f"update_rule={self.update_rule.value!r}, "
             f"grid_shape={tuple(int(dim) for dim in self.grid.shape)!r}, "
             f"jump_distance={self.jump_distance!r}, "
-            f"delta={self._delta_display(self.delta)!r}, "
+            f"kernel={self._kernel_display(self.kernel)!r}, "
             f"distance_metric={self.distance_metric!r}, "
             f"num_spins={self.num_spins}, "
             f"initialized={self.initialized}"
@@ -457,8 +459,26 @@ class System:
         return self._definition.update_rule
 
     @property
-    def delta(self) -> DeltaType | Callable:
-        return self._neighborhood_model.delta
+    def kernel(self) -> KernelSpec | Callable | None:
+        return self._neighborhood_model.kernel
+
+    @property
+    def delta(self) -> DeltaType | KernelSpec | Callable | None:
+        warnings.warn(
+            "System.delta is deprecated; use System.kernel.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        kernel = self.kernel
+        if isinstance(kernel, KernelSpec):
+            legacy = {
+                "cosine": DeltaType.TWO,
+                "cell_averaged_hat": DeltaType.ONE_STAR_NAME,
+                "cell_averaged_cosine": DeltaType.TWO_STAR_NAME,
+                "exact": DeltaType.EXACT,
+            }
+            return legacy.get(kernel.kind, kernel)
+        return kernel
 
     @property
     def distance_metric(self) -> DistanceMetric | None:
@@ -486,7 +506,21 @@ class System:
 
     @property
     def prob_prefactor(self) -> float:
-        return self._neighborhood_model.prob_prefactor
+        warnings.warn(
+            "System.prob_prefactor is deprecated; use probability() or "
+            "current_probability.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return continuum_probability_prefactor(self)
+
+    @property
+    def shell_measure(self) -> Callable[[float], float] | None:
+        return self._neighborhood_model.shell_measure
+
+    @property
+    def radial_bounds(self) -> tuple[float, float] | None:
+        return self._neighborhood_model.radial_bounds
 
     @property
     def system_shape(self) -> int | tuple[int, ...] | None:
@@ -523,6 +557,58 @@ class System:
     @best_energy.setter
     def best_energy(self, value: float) -> None:
         self._runtime.best_energy = float(value)
+
+    def probability(
+        self,
+        spins: NDArray[np.bool_] | None = None,
+        *,
+        normalization: str = "continuum",
+    ) -> float:
+        """Return the Grasshopper probability for a spin configuration."""
+        if spins is None:
+            if self.current_system is None:
+                raise RuntimeError("System has no current spin configuration.")
+            return calculate_probability(
+                self,
+                self.current_system,
+                normalization=normalization,
+                energy=self.current_energy,
+            )
+        return calculate_probability(
+            self,
+            spins,
+            normalization=normalization,
+        )
+
+    @property
+    def current_probability(self) -> float:
+        return self.probability(normalization="continuum")
+
+    @property
+    def best_probability(self) -> float:
+        if self.best_system is None:
+            raise RuntimeError("System has no best spin configuration.")
+        return calculate_probability(
+            self,
+            self.best_system,
+            normalization="continuum",
+            energy=self.best_energy,
+        )
+
+    @property
+    def current_graph_probability(self) -> float:
+        return self.probability(normalization="graph")
+
+    @property
+    def best_graph_probability(self) -> float:
+        if self.best_system is None:
+            raise RuntimeError("System has no best spin configuration.")
+        return calculate_probability(
+            self,
+            self.best_system,
+            normalization="graph",
+            energy=self.best_energy,
+        )
 
     @property
     def anneal_data(self) -> AnnealData:
@@ -642,46 +728,49 @@ class System:
         return n_sites
 
     @classmethod
-    def _coerce_delta(cls, value: DeltaType | str | Callable) -> DeltaType | Callable:
-        if callable(value):
+    def _coerce_kernel(
+        cls,
+        value: KernelSpec | DeltaType | str | Callable,
+    ) -> KernelSpec | Callable:
+        if callable(value) and not isinstance(value, KernelSpec):
             return value
-        if isinstance(value, DeltaType):
-            return value
-        if isinstance(value, str):
-            delta_key = value.lower().replace("-", "_")
-            for delta in DeltaType:
-                if delta_key == delta.value.lower().replace("-", "_"):
-                    return delta
-            valid = ", ".join(delta.value for delta in DeltaType)
-            raise ValueError(f"Unknown delta {value!r}. Expected one of: {valid}.")
-        raise TypeError("delta must be a DeltaType, string, or callable.")
+        return KernelSpec.from_value(value)
 
     @staticmethod
-    def _delta_argument(delta: DeltaType | Callable) -> str | Callable:
-        return delta.value if isinstance(delta, DeltaType) else delta
+    def _kernel_argument(
+        kernel: KernelSpec | Callable,
+    ) -> KernelSpec | Callable:
+        return kernel
 
     @staticmethod
-    def _delta_display(delta: DeltaType | Callable) -> str:
-        return delta.value if isinstance(delta, DeltaType) else repr(delta)
+    def _kernel_display(kernel: KernelSpec | Callable | None) -> str:
+        if isinstance(kernel, KernelSpec):
+            if kernel.kind == "gaussian":
+                return (
+                    f"gaussian(sigma={kernel.sigma!r}, "
+                    f"cutoff={kernel.cutoff!r})"
+                )
+            return kernel.kind
+        return repr(kernel)
 
-    def _resolve_delta_for_compute(
+    def _resolve_kernel_for_compute(
         self,
-        delta: DeltaType | str | Callable | None,
-    ) -> DeltaType | Callable:
-        if delta is not None:
-            return self._coerce_delta(delta)
-        if self._neighborhood_model.delta_is_custom:
+        kernel: KernelSpec | DeltaType | str | Callable | None,
+    ) -> KernelSpec | Callable:
+        if kernel is not None:
+            return self._coerce_kernel(kernel)
+        if self._neighborhood_model.kernel_is_custom:
             raise ValueError(
-                "The saved neighborhood metadata used a custom delta kernel. "
-                "Pass delta=... to compute_neighborhood() to rebuild it."
+                "The saved neighborhood metadata used a custom kernel. "
+                "Pass kernel=... to compute_neighborhood() to rebuild it."
             )
-        if self._neighborhood_model.delta is not None:
-            return self._coerce_delta(self.delta)
-        return DeltaType.TWO
+        if self.kernel is not None:
+            return self._coerce_kernel(self.kernel)
+        return KernelSpec.cosine()
 
     @staticmethod
-    def _is_custom_delta(delta: DeltaType | Callable) -> bool:
-        return not isinstance(delta, DeltaType)
+    def _is_custom_kernel(kernel: KernelSpec | Callable) -> bool:
+        return not isinstance(kernel, KernelSpec)
 
     @staticmethod
     def _default_distance_metric(geometry: Geometry) -> str:
@@ -706,8 +795,7 @@ class System:
     def _is_custom_distance_metric(distance_metric: DistanceMetric) -> bool:
         return not isinstance(distance_metric, str)
 
-    @staticmethod
-    def _coerce_jump_distance(value: float | None) -> float:
+    def _coerce_jump_distance(self, value: float | None) -> float:
         if value is None:
             raise ValueError(
                 "jump_distance is required. Pass it to compute_neighborhood("
@@ -716,7 +804,26 @@ class System:
         jump_distance = float(value)
         if not np.isfinite(jump_distance):
             raise ValueError(f"jump_distance must be finite, got {value!r}.")
+        if jump_distance < 0:
+            raise ValueError("jump_distance must be nonnegative.")
+        if self.geometry == Geometry.SPHERICAL and jump_distance > np.pi:
+            raise ValueError("Spherical jump_distance must lie in [0, pi].")
         return jump_distance
+
+    @staticmethod
+    def _coerce_radial_bounds(
+        value: tuple[float, float] | None,
+    ) -> tuple[float, float] | None:
+        if value is None:
+            return None
+        if len(value) != 2:
+            raise ValueError("radial_bounds must contain exactly two values.")
+        lower, upper = float(value[0]), float(value[1])
+        if not np.isfinite(lower) or lower < 0:
+            raise ValueError("The lower radial bound must be finite and nonnegative.")
+        if np.isnan(upper) or upper <= lower:
+            raise ValueError("The upper radial bound must be greater than the lower.")
+        return lower, upper
 
     @classmethod
     def _make_anneal_schedule(
@@ -876,47 +983,67 @@ class System:
         self,
         jump_distance: float | None = None,
         *,
+        kernel: KernelSpec | DeltaType | str | Callable | None = None,
         delta: DeltaType | str | Callable | None = None,
         silent: bool = True,
         distance_metric: DistanceMetric | None = None,
+        shell_measure: Callable[[float], float] | None = None,
+        radial_bounds: tuple[float, float] | None = None,
     ) -> None:
         """
-        Build and store the neighborhood and probability prefactor.
+        Build and store a neighborhood plus probability-normalization metadata.
 
         For Euclidean systems, kernel cell length is based on `self.num_spins`
         (occupied sites), not `len(self.grid)`. Thus refining the candidate grid
         leaves the physical jump-distance scale unchanged as long as the
         occupied-site count is unchanged.
         """
+        if kernel is not None and delta is not None:
+            raise ValueError("Pass kernel= or the deprecated delta=, not both.")
+        if delta is not None:
+            warnings.warn(
+                "delta= is deprecated; use kernel=.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kernel = delta
         self._neighborhood_model.jump_distance = self._coerce_jump_distance(
             self.jump_distance if jump_distance is None else jump_distance
         )
-        self._neighborhood_model.delta = self._resolve_delta_for_compute(delta)
-        self._neighborhood_model.delta_is_custom = self._is_custom_delta(self.delta)
+        resolved_kernel = self._resolve_kernel_for_compute(kernel)
+        self._neighborhood_model.kernel = resolved_kernel
+        self._neighborhood_model.kernel_is_custom = self._is_custom_kernel(
+            resolved_kernel
+        )
         metric = self._resolve_distance_metric_for_compute(distance_metric)
         self._neighborhood_model.distance_metric = metric
         self._neighborhood_model.distance_metric_is_custom = (
             self._is_custom_distance_metric(metric)
         )
 
-        if self.geometry == Geometry.EUCLIDEAN:
-            self._neighborhood_model.prob_prefactor = (
-                calculate_prob_prefactor_euclidean(
-                    self.num_spins,
-                    self.jump_distance,
-                    self.dimension,
-                )
+        if shell_measure is not None:
+            if not callable(shell_measure):
+                raise TypeError("shell_measure must be callable.")
+            self._neighborhood_model.shell_measure = shell_measure
+            self._neighborhood_model.shell_measure_is_custom = True
+        elif (
+            self._neighborhood_model.shell_measure_is_custom
+            and self._neighborhood_model.shell_measure is None
+        ):
+            raise ValueError(
+                "The saved normalization metadata used a custom shell_measure. "
+                "Pass shell_measure=... to compute_neighborhood() to rebuild it."
             )
-        else:
-            self._neighborhood_model.prob_prefactor = calculate_prob_prefactor(
-                len(self.grid), self.jump_distance
+        if radial_bounds is not None:
+            self._neighborhood_model.radial_bounds = self._coerce_radial_bounds(
+                radial_bounds
             )
 
         if self.geometry == Geometry.EUCLIDEAN:
             rows = build_euclidean_neighborhood(
                 self.grid,
                 self.jump_distance,
-                delta=self._delta_argument(self.delta),
+                delta=self._kernel_argument(resolved_kernel),
                 silent=silent,
                 distance_metric=metric,
                 occupied_sites=self.num_spins,
@@ -924,19 +1051,30 @@ class System:
             self._neighborhood_model.neighborhood = (
                 NonAntipodalNeighborhoodCSR.from_rows(rows)
             )
+            self._refresh_energies_after_neighborhood_build()
             return
 
         rows = build_neighborhood(
             self.grid,
             self.jump_distance,
             antipodal=self.antipodal,
-            delta=self._delta_argument(self.delta),
+            delta=self._kernel_argument(resolved_kernel),
             silent=silent,
             distance_metric=metric,
         )
         self._neighborhood_model.neighborhood = (
             rows if self.antipodal else NonAntipodalNeighborhoodCSR.from_rows(rows)
         )
+        self._refresh_energies_after_neighborhood_build()
+
+    def _refresh_energies_after_neighborhood_build(self) -> None:
+        if self.neighborhood is None:
+            return
+        energy = get_engine(self.config).energy
+        if self.current_system is not None:
+            self.current_energy = energy(self.current_system, self.neighborhood)
+        if self.best_system is not None:
+            self.best_energy = energy(self.best_system, self.neighborhood)
 
     def _require_neighborhood(self) -> None:
         if self.neighborhood is None:
@@ -975,13 +1113,17 @@ class System:
             system_shape=self.system_shape,
         )
         clone._neighborhood_model = NeighborhoodModel(
-            delta=self.delta,
-            delta_is_custom=self._neighborhood_model.delta_is_custom,
+            kernel=self.kernel,
+            kernel_is_custom=self._neighborhood_model.kernel_is_custom,
             jump_distance=self.jump_distance,
             distance_metric=self.distance_metric,
             distance_metric_is_custom=self._neighborhood_model.distance_metric_is_custom,
+            shell_measure=self.shell_measure,
+            shell_measure_is_custom=(
+                self._neighborhood_model.shell_measure_is_custom
+            ),
+            radial_bounds=self.radial_bounds,
             neighborhood=self.neighborhood,
-            prob_prefactor=float(self.prob_prefactor),
         )
         clone._runtime = self._runtime.copy()
         return clone
@@ -1409,15 +1551,36 @@ class System:
             attrs["distance_metric"] = str(metric)
         return attrs
 
-    def _delta_metadata(self) -> dict[str, str | bool]:
-        delta = self.delta
-        custom = bool(self._neighborhood_model.delta_is_custom)
-        attrs: dict[str, str | bool] = {"delta_custom": custom}
+    def _kernel_metadata(self) -> dict[str, str | bool | float]:
+        kernel = self.kernel
+        custom = bool(self._neighborhood_model.kernel_is_custom)
+        attrs: dict[str, str | bool | float] = {"kernel_custom": custom}
         if custom:
-            attrs["delta"] = "custom"
-            attrs["delta_repr"] = repr(delta)
-        else:
-            attrs["delta"] = self._delta_argument(delta)
+            attrs["kernel_kind"] = "custom"
+            attrs["kernel_repr"] = repr(kernel)
+            return attrs
+        if not isinstance(kernel, KernelSpec):
+            attrs["kernel_kind"] = "custom"
+            attrs["kernel_custom"] = True
+            attrs["kernel_repr"] = repr(kernel)
+            return attrs
+        attrs["kernel_kind"] = kernel.kind
+        if kernel.kind == "gaussian":
+            attrs["gaussian_sigma"] = float(kernel.sigma)
+            attrs["gaussian_cutoff_unbounded"] = kernel.cutoff is None
+            if kernel.cutoff is not None:
+                attrs["gaussian_cutoff"] = float(kernel.cutoff)
+        return attrs
+
+    def _normalization_metadata(self) -> dict[str, str | bool]:
+        custom = bool(self._neighborhood_model.shell_measure_is_custom)
+        attrs: dict[str, str | bool] = {"shell_measure_custom": custom}
+        if custom:
+            attrs["shell_measure_repr"] = repr(self.shell_measure)
+        if self.radial_bounds is not None:
+            attrs["radial_bounds_json"] = json.dumps(
+                [float(bound) for bound in self.radial_bounds]
+            )
         return attrs
 
     def to_dataset(self) -> xr.Dataset:
@@ -1454,7 +1617,6 @@ class System:
             "dimension": int(self.dimension),
             "grid_shape_json": json.dumps([int(dim) for dim in self.grid.shape]),
             "grid_dtype": str(self.grid.dtype),
-            "prob_prefactor": float(self.prob_prefactor),
             "current_energy": float(self.current_energy),
             "best_energy": float(self.best_energy),
             "temperature": float(self.temperature),
@@ -1466,7 +1628,8 @@ class System:
         }
         if self.jump_distance is not None:
             attrs["jump_distance"] = float(self.jump_distance)
-        attrs.update(self._delta_metadata())
+        attrs.update(self._kernel_metadata())
+        attrs.update(self._normalization_metadata())
         attrs.update(self._distance_metric_metadata())
         attrs.update(self._neighborhood_storage_metadata())
         ds.attrs.update(attrs)
@@ -1484,10 +1647,9 @@ class System:
         Validates that the saved state matches this instance's grid shape and configuration.
         Rebuild neighborhood yourself after loading if needed.
 
-        For Euclidean systems, the saved occupied-site count (`num_spins`) is
-        restored before the probability prefactor is recomputed. The grid itself
-        is still supplied by the live `System` instance and must match the saved
-        candidate-site metadata.
+        The grid itself is supplied by the live `System` instance and must
+        match the saved candidate-site metadata. Save formats 3.0 and 4.0 are
+        accepted; version 3 delta metadata is migrated to `KernelSpec`.
         """
         load_path = Path(load_path)
         if not load_path.exists():
@@ -1495,18 +1657,53 @@ class System:
 
         ds = xr.load_dataset(load_path)
         format_version = str(self._require_dataset_attr(ds, "format_version"))
-        if format_version != self._SAVE_FORMAT_VERSION:
+        if format_version not in self._SUPPORTED_SAVE_FORMAT_VERSIONS:
             raise ValueError(
                 "Unsupported saved-state format_version "
-                f"{format_version!r}. Expected {self._SAVE_FORMAT_VERSION!r}."
+                f"{format_version!r}. Expected one of "
+                f"{sorted(self._SUPPORTED_SAVE_FORMAT_VERSIONS)!r}."
             )
 
         saved_config = self._config_from_dataset_attrs(ds)
-        saved_delta_raw = self._require_dataset_attr(ds, "delta")
-        saved_delta_custom = bool(ds.attrs.get("delta_custom", False))
-        saved_delta = (
-            DeltaType.TWO if saved_delta_custom else self._coerce_delta(saved_delta_raw)
-        )
+        if format_version == "3.0":
+            saved_kernel_custom = bool(ds.attrs.get("delta_custom", False))
+            saved_kernel = (
+                None
+                if saved_kernel_custom
+                else KernelSpec.from_value(self._require_dataset_attr(ds, "delta"))
+            )
+            saved_shell_measure_custom = False
+            saved_radial_bounds = None
+        else:
+            saved_kernel_custom = bool(ds.attrs.get("kernel_custom", False))
+            kernel_kind = str(self._require_dataset_attr(ds, "kernel_kind"))
+            if saved_kernel_custom:
+                saved_kernel = None
+            elif kernel_kind == "gaussian":
+                cutoff = (
+                    None
+                    if bool(ds.attrs.get("gaussian_cutoff_unbounded", False))
+                    else float(self._require_dataset_attr(ds, "gaussian_cutoff"))
+                )
+                saved_kernel = KernelSpec.gaussian(
+                    float(self._require_dataset_attr(ds, "gaussian_sigma")),
+                    cutoff=cutoff,
+                )
+            else:
+                saved_kernel = KernelSpec.from_value(kernel_kind)
+            saved_shell_measure_custom = bool(
+                ds.attrs.get("shell_measure_custom", False)
+            )
+            if "radial_bounds_json" in ds.attrs:
+                try:
+                    raw_bounds = json.loads(str(ds.attrs["radial_bounds_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        "Saved radial_bounds_json is not valid JSON."
+                    ) from exc
+                saved_radial_bounds = self._coerce_radial_bounds(tuple(raw_bounds))
+            else:
+                saved_radial_bounds = None
 
         # 1) Validate against current instance (grid must already exist)
         if not isinstance(self.grid, np.ndarray) or self.grid.ndim != 2:
@@ -1559,13 +1756,18 @@ class System:
             n_sites=int(self.grid.shape[0]),
             num_spins=int(self.num_spins),
         )
-        self._neighborhood_model.delta = saved_delta
-        self._neighborhood_model.delta_is_custom = saved_delta_custom
+        self._neighborhood_model.kernel = saved_kernel
+        self._neighborhood_model.kernel_is_custom = saved_kernel_custom
         self._neighborhood_model.jump_distance = (
             self._coerce_jump_distance(ds.attrs["jump_distance"])
             if "jump_distance" in ds.attrs
             else None
         )
+        self._neighborhood_model.shell_measure = None
+        self._neighborhood_model.shell_measure_is_custom = (
+            saved_shell_measure_custom
+        )
+        self._neighborhood_model.radial_bounds = saved_radial_bounds
         saved_metric = ds.attrs.get("distance_metric")
         saved_metric_custom = bool(ds.attrs.get("distance_metric_custom", False))
         if saved_metric_custom:
@@ -1647,22 +1849,8 @@ class System:
         else:
             self.set_occupancy(None)
 
-        # 3) Recompute prob_prefactor from live grid + jump_distance (grid wasn't saved)
+        # 3) Restore live-grid dimensional metadata.
         self._definition.dimension = int(self.grid.shape[1])
-        if self.jump_distance is None:
-            self._neighborhood_model.prob_prefactor = 0.0
-        elif self.geometry == Geometry.EUCLIDEAN:
-            self._neighborhood_model.prob_prefactor = (
-                calculate_prob_prefactor_euclidean(
-                    self.num_spins,
-                    self.jump_distance,
-                    self.dimension,
-                )
-            )
-        else:
-            self._neighborhood_model.prob_prefactor = calculate_prob_prefactor(
-                len(self.grid), self.jump_distance
-            )
 
         # 4) Safety: neighborhood must be rebuilt
         self._neighborhood_model.neighborhood = None

@@ -10,7 +10,11 @@ import numpy as np
 
 import grasshopper as gh
 import grasshopper.euclidean.build_neighbors as euclidean_neighbors
-from grasshopper.kernels import calculate_contributions, delta_two, resolve_delta_kernel
+from grasshopper.kernels import (
+    calculate_contributions,
+    cosine_kernel,
+    resolve_delta_kernel,
+)
 
 from tests.helpers import cleanup_tmp_root, euclidean_grid, make_test_dir, spherical_grid
 
@@ -130,7 +134,7 @@ class SystemApiTests(unittest.TestCase):
             jump_distance=0.30,
             cell_length=0.01,
             distances=np.array([0.31999999999999995, 0.32000000000000006]),
-            delta_func=delta_two,
+            delta_func=cosine_kernel,
         )
 
         self.assertEqual(contributions.size, 0)
@@ -201,7 +205,7 @@ class SystemApiTests(unittest.TestCase):
         system = gh.System.square_lattice(4, 4, num_spins=4)
         system.compute_neighborhood(
             jump_distance=0.25,
-            delta=record_cell_length,
+            kernel=record_cell_length,
             silent=True,
         )
 
@@ -222,7 +226,7 @@ class SystemApiTests(unittest.TestCase):
             system = gh.System.square_lattice(grid_length, grid_length, num_spins=4)
             system.compute_neighborhood(
                 jump_distance=0.25,
-                delta=record_cell_length,
+                kernel=record_cell_length,
                 silent=True,
             )
             return seen_cell_lengths
@@ -262,7 +266,7 @@ class SystemApiTests(unittest.TestCase):
 
         manual_system.compute_neighborhood(jump_distance=jump_distance, silent=True)
         builtin_system.compute_neighborhood(jump_distance=jump_distance, silent=True)
-        self.assertEqual(manual_system.prob_prefactor, builtin_system.prob_prefactor)
+        self.assertEqual(manual_system.kernel, builtin_system.kernel)
 
         manual_to_builtin = np.empty(len(manual_grid), dtype=np.int64)
         for manual_index, (x_coord, y_coord) in enumerate(manual_grid):
@@ -537,15 +541,15 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(ball_prune.call_count, 0)
         self.assertEqual(len(rows), len(euclidean_grid()))
 
-    def test_unknown_delta_raises_consistently(self) -> None:
+    def test_unknown_kernel_raises_consistently(self) -> None:
         system = gh.System.inverse(spherical_grid())
 
-        with self.assertRaisesRegex(ValueError, "Unknown delta"):
-            system.compute_neighborhood(jump_distance=np.pi / 2, delta="twpo")
-        with self.assertRaisesRegex(ValueError, "Unknown delta"):
+        with self.assertRaisesRegex(ValueError, "Unknown kernel"):
+            system.compute_neighborhood(jump_distance=np.pi / 2, kernel="twpo")
+        with self.assertRaisesRegex(ValueError, "Unknown kernel"):
             resolve_delta_kernel("twpo")
 
-    def test_compute_neighborhood_accepts_callable_delta(self) -> None:
+    def test_compute_neighborhood_accepts_callable_kernel(self) -> None:
         def custom_delta(distances, cell_length):
             mask = distances <= cell_length
             return np.ones(np.count_nonzero(mask), dtype=float), mask
@@ -553,18 +557,18 @@ class SystemApiTests(unittest.TestCase):
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
         system.compute_neighborhood(
             jump_distance=1.0,
-            delta=custom_delta,
+            kernel=custom_delta,
             silent=True,
         )
 
         attrs = system.to_dataset().attrs
-        self.assertIs(system.delta, custom_delta)
-        self.assertTrue(bool(attrs["delta_custom"]))
-        self.assertEqual(attrs["delta"], "custom")
-        self.assertIn("custom_delta", attrs["delta_repr"])
+        self.assertIs(system.kernel, custom_delta)
+        self.assertTrue(bool(attrs["kernel_custom"]))
+        self.assertEqual(attrs["kernel_kind"], "custom")
+        self.assertIn("custom_delta", attrs["kernel_repr"])
         self.assertIsInstance(system.neighborhood, gh.NonAntipodalNeighborhoodCSR)
 
-    def test_loaded_custom_delta_requires_callable_to_rebuild(self) -> None:
+    def test_loaded_custom_kernel_requires_callable_to_rebuild(self) -> None:
         def custom_delta(distances, cell_length):
             mask = distances <= cell_length
             return np.ones(np.count_nonzero(mask), dtype=float), mask
@@ -573,7 +577,7 @@ class SystemApiTests(unittest.TestCase):
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
         system.compute_neighborhood(
             jump_distance=1.0,
-            delta=custom_delta,
+            kernel=custom_delta,
             silent=True,
         )
         system.array_init(np.array([True, False, True, False], dtype=bool))
@@ -582,11 +586,11 @@ class SystemApiTests(unittest.TestCase):
         loaded = gh.System.euclidean(euclidean_grid(), num_spins=2)
         loaded.load(save_path)
 
-        with self.assertRaisesRegex(ValueError, "custom delta kernel"):
+        with self.assertRaisesRegex(ValueError, "custom kernel"):
             loaded.compute_neighborhood(silent=True)
 
-        loaded.compute_neighborhood(delta=custom_delta, silent=True)
-        self.assertIs(loaded.delta, custom_delta)
+        loaded.compute_neighborhood(kernel=custom_delta, silent=True)
+        self.assertIs(loaded.kernel, custom_delta)
         self.assertIsInstance(loaded.neighborhood, gh.NonAntipodalNeighborhoodCSR)
 
     def test_seeded_random_init_is_reproducible_without_consuming_global_rng(self) -> None:
@@ -695,20 +699,20 @@ class SystemApiTests(unittest.TestCase):
 
         attrs = system.to_dataset().attrs
 
-        self.assertEqual(attrs["format_version"], "3.0")
+        self.assertEqual(attrs["format_version"], "4.0")
         self.assertEqual(attrs["geometry"], "euclidean")
         self.assertEqual(attrs["constraint"], "fixed-density")
         self.assertEqual(attrs["interaction_model"], "occupancy")
         self.assertEqual(attrs["update_rule"], "swap")
-        self.assertEqual(attrs["delta"], "two")
-        self.assertFalse(bool(attrs["delta_custom"]))
+        self.assertEqual(attrs["kernel_kind"], "cosine")
+        self.assertFalse(bool(attrs["kernel_custom"]))
         self.assertEqual(attrs["distance_metric"], "euclidean")
         self.assertFalse(bool(attrs["distance_metric_custom"]))
         self.assertEqual(attrs["dimension"], 2)
         self.assertEqual(json.loads(attrs["grid_shape_json"]), [4, 2])
         self.assertEqual(attrs["grid_dtype"], str(system.grid.dtype))
         self.assertIn("jump_distance", attrs)
-        self.assertIn("prob_prefactor", attrs)
+        self.assertNotIn("prob_prefactor", attrs)
         self.assertTrue(bool(attrs["neighborhood_built"]))
         self.assertEqual(attrs["neighborhood_storage"], "csr")
         self.assertEqual(attrs["neighborhood_rows"], 4)

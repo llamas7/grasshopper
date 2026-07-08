@@ -16,6 +16,7 @@ from .core import (
     GreedyHistory,
     GreedyRecord,
     InteractionModel,
+    KernelSpec,
     Neighborhood,
     NeighborhoodData,
     NonAntipodalNeighborhood,
@@ -38,7 +39,7 @@ from .lattices import (
 from .metrics import DistanceMetric
 from .parallel_tempering import ParallelTemperingResult
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AnnealData",
@@ -54,6 +55,7 @@ __all__ = [
     "hexagonal_lattice",
     "honeycomb_lattice",
     "InteractionModel",
+    "KernelSpec",
     "Neighborhood",
     "NeighborhoodData",
     "NonAntipodalNeighborhood",

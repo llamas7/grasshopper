@@ -89,7 +89,7 @@ def main() -> None:
     )
     system.compute_neighborhood(
         jump_distance=args.jump_distance,
-        delta="two",
+        kernel=gh.KernelSpec.cosine(),
         distance_metric="euclidean",
         silent=True,
     )

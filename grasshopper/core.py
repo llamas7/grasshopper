@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
+import warnings
 import numpy as np
 from numpy.typing import NDArray
 
@@ -584,6 +585,133 @@ class DeltaType(str, Enum):
 
 
 @dataclass(frozen=True)
+class KernelSpec:
+    """Serializable specification for a built-in radial interaction kernel."""
+
+    kind: str
+    sigma: float | None = None
+    cutoff: float | None = None
+
+    def __post_init__(self) -> None:
+        aliases = {
+            "cosine": "cosine",
+            "compact_cosine": "cosine",
+            "two": "cosine",
+            "cell_averaged_hat": "cell_averaged_hat",
+            "quadratic_bspline": "cell_averaged_hat",
+            "one*": "cell_averaged_hat",
+            "one_star": "cell_averaged_hat",
+            "cell_averaged_cosine": "cell_averaged_cosine",
+            "smoothed_cosine": "cell_averaged_cosine",
+            "two*": "cell_averaged_cosine",
+            "two_star": "cell_averaged_cosine",
+            "delta": "exact",
+            "dirac": "exact",
+            "exact": "exact",
+            "exact_delta": "exact",
+            "real_delta": "exact",
+            "gaussian": "gaussian",
+        }
+        key = str(self.kind).lower().replace("-", "_")
+        try:
+            canonical = aliases[key]
+        except KeyError as exc:
+            valid = ", ".join(sorted(set(aliases.values())))
+            raise ValueError(
+                f"Unknown kernel kind {self.kind!r}. Expected one of: {valid}."
+            ) from exc
+        object.__setattr__(self, "kind", canonical)
+
+        if canonical == "gaussian":
+            if self.sigma is None:
+                raise ValueError("Gaussian kernels require sigma.")
+            sigma = float(self.sigma)
+            if not np.isfinite(sigma) or sigma <= 0:
+                raise ValueError("Gaussian sigma must be a positive finite number.")
+            object.__setattr__(self, "sigma", sigma)
+            if self.cutoff is not None:
+                cutoff = float(self.cutoff)
+                if not np.isfinite(cutoff) or cutoff <= 0:
+                    raise ValueError(
+                        "Gaussian cutoff must be positive and finite, or None."
+                    )
+                object.__setattr__(self, "cutoff", cutoff)
+        elif self.sigma is not None or self.cutoff is not None:
+            raise ValueError(
+                "sigma and cutoff are only valid for Gaussian kernels."
+            )
+
+    @classmethod
+    def cosine(cls) -> "KernelSpec":
+        """Return the compact cosine kernel with support ``2h``."""
+        return cls("cosine")
+
+    @classmethod
+    def cell_averaged_hat(cls) -> "KernelSpec":
+        """Return the cell-averaged hat kernel with support ``3h/2``."""
+        return cls("cell_averaged_hat")
+
+    @classmethod
+    def cell_averaged_cosine(cls) -> "KernelSpec":
+        """Return the cell-averaged cosine kernel with support ``5h/2``."""
+        return cls("cell_averaged_cosine")
+
+    @classmethod
+    def two(cls) -> "KernelSpec":
+        warnings.warn(
+            "KernelSpec.two() is deprecated; use KernelSpec.cosine().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return cls.cosine()
+
+    @classmethod
+    def one_star(cls) -> "KernelSpec":
+        warnings.warn(
+            "KernelSpec.one_star() is deprecated; use "
+            "KernelSpec.cell_averaged_hat().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return cls.cell_averaged_hat()
+
+    @classmethod
+    def two_star(cls) -> "KernelSpec":
+        warnings.warn(
+            "KernelSpec.two_star() is deprecated; use "
+            "KernelSpec.cell_averaged_cosine().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return cls.cell_averaged_cosine()
+
+    @classmethod
+    def exact(cls) -> "KernelSpec":
+        return cls("exact")
+
+    @classmethod
+    def gaussian(
+        cls,
+        sigma: float,
+        cutoff: float | None = 5.0,
+    ) -> "KernelSpec":
+        return cls("gaussian", sigma=sigma, cutoff=cutoff)
+
+    @classmethod
+    def from_value(
+        cls,
+        value: "KernelSpec | DeltaType | str",
+    ) -> "KernelSpec":
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, DeltaType):
+            return cls(value.value)
+        if isinstance(value, str):
+            return cls(value)
+        raise TypeError("kernel must be a KernelSpec, DeltaType, string, or callable.")
+
+
+@dataclass(frozen=True)
 class SystemConfig:
     """Orthogonal system description for a supported optimizer/system family."""
 
@@ -724,13 +852,15 @@ class SystemDefinition:
 class NeighborhoodModel:
     """Neighborhood configuration plus cached derived structures."""
 
-    delta: DeltaType | Callable[..., Any]
-    delta_is_custom: bool = False
+    kernel: KernelSpec | Callable[..., Any] | None
+    kernel_is_custom: bool = False
     jump_distance: float | None = None
     distance_metric: Any | None = None
     distance_metric_is_custom: bool = False
+    shell_measure: Callable[[float], float] | None = None
+    shell_measure_is_custom: bool = False
+    radial_bounds: tuple[float, float] | None = None
     neighborhood: NeighborhoodData | None = None
-    prob_prefactor: float = 0.0
 
 
 @dataclass
