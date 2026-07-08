@@ -8,12 +8,8 @@ import numpy as np
 from .core import KernelSpec
 
 
-EXACT_DELTA_ATOL = 100.0 * np.finfo(float).eps
+EXACT_KERNEL_ATOL = 100.0 * np.finfo(float).eps
 ZERO_CONTRIBUTION_ATOL = 100.0 * np.finfo(float).eps
-
-
-def calculate_prob_prefactor(n_points: int, theta: float) -> float:
-    return 4 / (np.sin(theta) * n_points ** (3 / 2) * np.sqrt(np.pi))
 
 
 def cosine_kernel(
@@ -66,11 +62,11 @@ def cell_averaged_cosine_kernel(
     return calculate_contributions(r[r_bool]), r_bool
 
 
-def delta_exact(
+def exact_kernel(
     spin_distance: np.ndarray, cell_length: float
 ) -> tuple[np.ndarray, np.ndarray]:
     """Unit contribution only when distance error is roundoff-level zero."""
-    tolerance = EXACT_DELTA_ATOL * max(1.0, float(abs(cell_length)))
+    tolerance = EXACT_KERNEL_ATOL * max(1.0, float(abs(cell_length)))
     interacting = np.isclose(spin_distance, 0.0, rtol=0.0, atol=tolerance)
     return np.ones(np.count_nonzero(interacting), dtype=np.float64), interacting
 
@@ -100,12 +96,6 @@ class ResolvedKernel:
     spec: KernelSpec | None
 
 
-# Compatibility aliases for the original discrete-delta terminology.
-delta_two = cosine_kernel
-delta_one_star = cell_averaged_hat_kernel
-delta_two_star = cell_averaged_cosine_kernel
-
-
 def resolve_kernel(
     kernel: KernelSpec | str | Callable,
     *,
@@ -120,7 +110,7 @@ def resolve_kernel(
         "cosine": cosine_kernel,
         "cell_averaged_hat": cell_averaged_hat_kernel,
         "cell_averaged_cosine": cell_averaged_cosine_kernel,
-        "exact": delta_exact,
+        "exact": exact_kernel,
     }
     interaction_spreads = {
         "cosine": 2.0,
@@ -152,23 +142,14 @@ def resolve_kernel(
     )
 
 
-def resolve_delta_kernel(
-    delta: KernelSpec | str | Callable,
-) -> tuple[Callable, float, bool]:
-    """Deprecated resolver returning support in units of a unit cell."""
-    resolved = resolve_kernel(delta, cell_length=1.0)
-    spread = np.inf if resolved.support_width is None else resolved.support_width
-    return resolved.function, float(spread), resolved.exact_scan_required
-
-
 def calculate_contributions(
     jump_distance: float,
     cell_length: float,
     distances: np.ndarray,
-    delta_func: Callable,
+    kernel_func: Callable,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     abs_distances = np.abs(jump_distance - distances)
-    contributions, interacting_bool = delta_func(abs_distances, cell_length)
+    contributions, interacting_bool = kernel_func(abs_distances, cell_length)
     nonzero_bool = np.abs(contributions) > ZERO_CONTRIBUTION_ATOL
     if not np.all(nonzero_bool):
         interacting_indices = np.flatnonzero(interacting_bool)

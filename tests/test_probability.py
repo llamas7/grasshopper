@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 import unittest
-import warnings
 
 import numpy as np
 from scipy.integrate import quad
@@ -49,29 +48,20 @@ class ProbabilityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gh.KernelSpec.gaussian(0.2, cutoff=0.0)
 
-    def test_legacy_kernel_names_remain_compatible(self) -> None:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self.assertEqual(gh.KernelSpec.two(), gh.KernelSpec.cosine())
-            self.assertEqual(
-                gh.KernelSpec.one_star(),
-                gh.KernelSpec.cell_averaged_hat(),
-            )
-            self.assertEqual(
-                gh.KernelSpec.two_star(),
-                gh.KernelSpec.cell_averaged_cosine(),
-            )
-        self.assertEqual(len(caught), 3)
-        self.assertTrue(all(item.category is DeprecationWarning for item in caught))
-        self.assertEqual(gh.KernelSpec("two").kind, "cosine")
-        self.assertEqual(
-            gh.KernelSpec("one_star").kind,
-            "cell_averaged_hat",
-        )
-        self.assertEqual(
-            gh.KernelSpec("two_star").kind,
-            "cell_averaged_cosine",
-        )
+    def test_legacy_kernel_names_are_removed(self) -> None:
+        for legacy_name in (
+            "two",
+            "one_star",
+            "one*",
+            "two_star",
+            "two*",
+            "delta",
+            "dirac",
+            "exact_delta",
+            "real_delta",
+        ):
+            with self.assertRaisesRegex(ValueError, "Unknown kernel"):
+                gh.KernelSpec(legacy_name)
 
     def test_compact_kernels_have_unit_mass(self) -> None:
         for kernel, support in (
@@ -123,6 +113,29 @@ class ProbabilityTests(unittest.TestCase):
             continuum_probability_prefactor(euclidean),
             expected_euclidean,
         )
+
+    def test_multi_shell_continuum_prefactor_uses_weighted_radial_mass(self) -> None:
+        distances = (np.pi / 3.0, np.pi / 2.0)
+        weights = (1.0, 0.5)
+        sphere = gh.System.inverse(spherical_grid())
+        sphere.compute_neighborhood(
+            distances,
+            jump_weights=weights,
+            kernel=gh.KernelSpec.cosine(),
+        )
+
+        cell_measure = 4.0 * np.pi / len(sphere.grid)
+        starting_measure = sphere.num_spins * cell_measure
+        cell_length = np.sqrt(cell_measure)
+        radial_mass = sum(
+            weight * spherical_shell_measure(distance)
+            for distance, weight in zip(distances, weights)
+        )
+        expected = 2.0 * cell_measure**2 / (
+            starting_measure * cell_length * radial_mass
+        )
+
+        self.assertAlmostEqual(continuum_probability_prefactor(sphere), expected)
 
     def test_probability_api_supports_current_best_and_arbitrary_states(self) -> None:
         systems_and_states = [
@@ -318,7 +331,7 @@ class ProbabilityTests(unittest.TestCase):
         )
         self.assertTrue(np.isfinite(gaussian.probability(state)))
 
-    def test_version_four_gaussian_roundtrip_and_version_three_migration(self) -> None:
+    def test_version_four_gaussian_roundtrip_and_version_three_rejection(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
         system.compute_neighborhood(
@@ -344,11 +357,9 @@ class ProbabilityTests(unittest.TestCase):
         legacy_path = test_dir / "v3.nc"
         legacy.to_netcdf(legacy_path)
 
-        migrated = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        migrated.load(legacy_path)
-        self.assertEqual(migrated.kernel, gh.KernelSpec.cosine())
-        migrated.compute_neighborhood()
-        self.assertEqual(migrated.kernel.kind, "cosine")
+        rejected = gh.System.euclidean(euclidean_grid(), num_spins=2)
+        with self.assertRaisesRegex(ValueError, "Unsupported saved-state"):
+            rejected.load(legacy_path)
 
     def test_custom_shell_measure_must_be_resupplied_after_load(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
@@ -393,20 +404,6 @@ class ProbabilityTests(unittest.TestCase):
                 atol=1e-12,
                 rtol=1e-12,
             )
-
-    def test_deprecated_delta_and_prefactor_aliases_warn(self) -> None:
-        system = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            system.compute_neighborhood(1.0, delta="two")
-            _ = system.delta
-            prefactor = system.prob_prefactor
-        self.assertEqual(len(caught), 3)
-        self.assertTrue(all(item.category is DeprecationWarning for item in caught))
-        self.assertAlmostEqual(
-            prefactor,
-            continuum_probability_prefactor(system),
-        )
 
     def test_spherical_shell_measure_matches_geodesic_circumference(self) -> None:
         self.assertAlmostEqual(spherical_shell_measure(np.pi / 2), 2.0 * np.pi)

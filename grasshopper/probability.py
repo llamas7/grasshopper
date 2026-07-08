@@ -202,27 +202,46 @@ def continuum_probability_prefactor(
             "kernel; use normalization='graph'."
         )
 
-    jump_distance = float(system.jump_distance)
+    raw_jump_distance = system.jump_distance
+    if isinstance(raw_jump_distance, tuple):
+        jump_distances = tuple(float(distance) for distance in raw_jump_distance)
+    else:
+        jump_distances = (float(raw_jump_distance),)
+    jump_weights = system.jump_weights or tuple(1.0 for _ in jump_distances)
+    if len(jump_weights) != len(jump_distances):
+        raise RuntimeError("Neighborhood jump distance and weight metadata mismatch.")
+
     shell_measure, radial_bounds = _shell_geometry(system)
     if kernel.kind == "gaussian":
-        radial_normalization = _gaussian_radial_normalization(
-            jump_distance=jump_distance,
-            kernel=kernel,
-            shell_measure=shell_measure,
-            radial_bounds=radial_bounds,
+        radial_normalization = sum(
+            float(weight)
+            * _gaussian_radial_normalization(
+                jump_distance=float(distance),
+                kernel=kernel,
+                shell_measure=shell_measure,
+                radial_bounds=radial_bounds,
+            )
+            for distance, weight in zip(jump_distances, jump_weights)
         )
     else:
-        if jump_distance == 0 or (
-            system.geometry == Geometry.SPHERICAL
-            and jump_distance in (0.0, float(np.pi))
-        ):
-            raise ValueError(
-                "Sharp continuum probability is undefined at a degenerate "
-                "distance shell; use a Gaussian kernel or graph normalization."
-            )
-        radial_normalization = float(shell_measure(jump_distance))
+        radial_normalization = 0.0
+        for jump_distance, weight in zip(jump_distances, jump_weights):
+            if jump_distance == 0 or (
+                system.geometry == Geometry.SPHERICAL
+                and jump_distance in (0.0, float(np.pi))
+            ):
+                raise ValueError(
+                    "Sharp continuum probability is undefined at a degenerate "
+                    "distance shell; use a Gaussian kernel or graph normalization."
+                )
+            shell_normalization = float(shell_measure(jump_distance))
+            if not np.isfinite(shell_normalization) or shell_normalization <= 0:
+                raise ZeroDivisionError("The radial shell normalization is zero.")
+            radial_normalization += float(weight) * shell_normalization
         if not np.isfinite(radial_normalization) or radial_normalization <= 0:
-            raise ZeroDivisionError("The radial shell normalization is zero.")
+            raise ZeroDivisionError(
+                "The weighted radial shell normalization is zero."
+            )
 
     cell_measure = _cell_measure(system)
     starting_measure = _starting_measure(system, spins)

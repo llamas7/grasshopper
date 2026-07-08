@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from math import gamma
 
 import numpy as np
 
@@ -78,34 +77,6 @@ def normalize_euclidean_grid(
     return np.ascontiguousarray(points * scale, dtype=np.float64)
 
 
-def calculate_prob_prefactor_euclidean(
-    n_points: int,
-    jump_distance: float,
-    dim: int,
-) -> float:
-    """
-    Probability prefactor for Euclidean systems.
-
-    At the `System` layer, `n_points` is the number of occupied sites
-    (`system.num_spins`), not the total number of candidate lattice sites.
-    The total occupied volume is fixed to 1.0 and the kernel is interpreted as
-    a one-dimensional delta regularization in radial distance.
-    """
-    if n_points <= 0:
-        raise ValueError("n_points must be positive")
-    if dim <= 0:
-        raise ValueError("dim must be positive")
-    if not np.isfinite(jump_distance) or jump_distance <= 0:
-        raise ValueError("jump_distance must be positive and finite.")
-    sphere_area = (
-        2.0
-        * np.pi ** (dim / 2.0)
-        * jump_distance ** (dim - 1)
-        / gamma(dim / 2.0)
-    )
-    return float(2.0 / (sphere_area * n_points ** (2.0 - 1.0 / dim)))
-
-
 def _resolve_occupied_site_count(
     occupied_sites: int | None,
     *,
@@ -176,7 +147,7 @@ def _ball_pruned_indices(
 def build_euclidean_neighborhood(
     grid_points: np.ndarray,
     jump_distance: float,
-    delta: KernelSpec | str | Callable = "cosine",
+    kernel: KernelSpec | str | Callable = "cosine",
     silent: bool = True,
     distance_metric: DistanceMetric = "euclidean",
     occupied_sites: int | None = None,
@@ -207,7 +178,7 @@ def build_euclidean_neighborhood(
         site_count=site_count,
     )
     cell_length = (1.0 / occupied_site_count) ** (1.0 / dim)
-    resolved_kernel = resolve_kernel(delta, cell_length=cell_length)
+    resolved_kernel = resolve_kernel(kernel, cell_length=cell_length)
     discrete_function = resolved_kernel.function
 
     jump_distance = float(jump_distance)

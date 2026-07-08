@@ -19,6 +19,7 @@
 
 # Keep library examples, but not generated example output.
 !examples/
+!examples/collect_gaussian.py
 !examples/parallel_tempering_square_lattice_demo.py
 
 # Ignore generated/cache files even inside unignored directories.

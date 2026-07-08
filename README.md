@@ -42,10 +42,12 @@ If a newly opened Codex conversation still does not resolve `python`, restart th
 
 ## Package layout
 
-- [grasshopper](/C:/Users/polka/OneDrive/Documents/Codex/spherical_grasshopper/grasshopper) - installable library package
-- [tests](/C:/Users/polka/OneDrive/Documents/Codex/spherical_grasshopper/tests) - `unittest` suite
-- [collect_data.py](/C:/Users/polka/OneDrive/Documents/Codex/spherical_grasshopper/collect_data.py) - example batch script
-- [pyproject.toml](/C:/Users/polka/OneDrive/Documents/Codex/spherical_grasshopper/pyproject.toml) - build metadata
+- [`grasshopper/`](grasshopper/) - installable library package
+- [`tests/`](tests/) - `unittest` suite
+- [`examples/collect_gaussian.py`](examples/collect_gaussian.py) - adaptive
+  Gaussian phase-transition scan
+- [`parallel_tempering_square_lattice_demo.py`](parallel_tempering_square_lattice_demo.py) - runnable lattice demonstration
+- [`pyproject.toml`](pyproject.toml) - build metadata
 
 ## Quick start
 
@@ -73,6 +75,19 @@ system.greedy(reinit=False)
 print(system.best_probability)
 system.save("output/non_antipodal_run.nc")
 ```
+
+Setup methods can be chained:
+
+```python
+system = (
+    gh.System.inverse(grid)
+    .compute_neighborhood(jump_distance=np.pi / 2)
+    .random_init(seed=123)
+)
+```
+
+Use `system.state_summary()` to inspect the current configuration, loaded
+metadata, and whether the system is ready for optimization.
 
 ## Constructors
 
@@ -189,18 +204,29 @@ five standard deviations. Pass `cutoff=None` to retain the full tail with an
 all-pairs scan.
 
 String kernel names remain accepted through `kernel=`, including `"cosine"`,
-`"cell_averaged_hat"`, `"cell_averaged_cosine"`, and `"exact"`. The former
-names `"two"`, `"one_star"`, and `"two_star"` remain as compatibility aliases,
-and their `KernelSpec` factory methods are deprecated. Unknown names raise
-`ValueError`.
+`"cell_averaged_hat"`, `"cell_averaged_cosine"`, and `"exact"`. Unknown names
+raise `ValueError`.
 Custom callable kernels may also be passed through `kernel=...`; they should
 accept `(distance_errors, cell_length)` and return `(contributions, mask)`.
 
-The former `delta=` argument, `system.delta`, and `system.prob_prefactor` are
-deprecated compatibility interfaces.
-
 Jump distances are validated physically: Euclidean distances must be
 nonnegative, and spherical angular distances must lie in `[0, pi]`.
+
+Spherical systems also accept multiple weighted jump distances in one
+neighborhood build:
+
+```python
+system.compute_neighborhood(
+    jump_distance=[0.485 * np.pi, 0.515 * np.pi],
+    jump_weights=[1.0, 0.75],
+    kernel=gh.KernelSpec.cosine(),
+)
+```
+
+Each shell contributes `weight * kernel(distance_to_shell)`. If the same
+neighbor is reached by more than one shell, the edge weights are summed into a
+single row entry. When `jump_weights` is omitted, every shell uses weight
+`1.0`. Euclidean systems currently support only a scalar `jump_distance`.
 
 ## Energy and probability
 
@@ -302,6 +328,12 @@ system.anneal(
 
 You can also pass `schedule=gh.AnnealSchedule(...)`.
 
+`steps` sets a fixed number of Metropolis updates at every temperature. The
+current `AnnealSchedule` fields are `starting_temp`, `final_temp`,
+`cooling_rate`, `min_acceptance`, `max_runtime_hours`, `max_iterations`, and
+`starting_steps`; it does not automatically increase the step count while
+cooling.
+
 ### Greedy descent
 
 ```python
@@ -340,8 +372,26 @@ A complete square-lattice demonstration using `jump_distance=0.60` is available
 as a runnable script:
 
 ```bash
-python examples/parallel_tempering_square_lattice_demo.py
+python parallel_tempering_square_lattice_demo.py
 ```
+
+### Adaptive Gaussian transition scans
+
+The Gaussian collector starts with a small set of eta anchors, refines detected
+phase boundaries, adds runs where morphology labels disagree, and periodically
+checks broad same-label intervals:
+
+```bash
+python examples/collect_gaussian.py transitions \
+    --jump-distance 0.60 \
+    --eta-min 0.0 \
+    --eta-max 0.6
+```
+
+It resumes compatible records in the output directory automatically. Use
+`--uniform` for the original fixed-step eta grid, or `--overwrite` to restart
+only the matching scan. Adaptive progress and selection reasons are written to
+`adaptive_scan.json`.
 
 ## Histories
 
@@ -361,13 +411,16 @@ system.load("output/run.nc")
 ```
 
 If you pass a path with no suffix, the library treats it as a directory and writes `system_state.nc` inside it.
+`save()` returns the path written; `load()` mutates the existing system and
+returns `None`.
 
 Important persistence note:
 
 - spin state, energies, temperature, and optimizer histories are saved
-- neighborhood construction metadata is saved, including jump distance, kernel,
-  Gaussian width/cutoff, distance metric, normalization metadata, grid
-  shape/dtype, and neighborhood storage summary
+- neighborhood construction metadata is saved, including scalar jump distance
+  or spherical multi-shell jump distances/weights, kernel, Gaussian
+  width/cutoff, distance metric, normalization metadata, grid shape/dtype, and
+  neighborhood storage summary
 - Euclidean saved metadata includes both candidate-site count (`site_count`) and
   occupied-site count (`num_spins`)
 - the grid is not saved
@@ -378,15 +431,92 @@ configuration, then call `load(...)`. Rebuild the neighborhood afterward if
 you want to continue optimizing. For saved states that used built-in kernels
 and distance metrics, `compute_neighborhood()` reuses the loaded metadata when
 you omit those arguments. If the original kernel, metric, or shell measure was
-a custom callable, pass it again while rebuilding. Format `4.0` is written;
-format `3.0` files are read and their legacy delta metadata is migrated.
+a custom callable, pass it again while rebuilding. Format `4.0` is written and
+read.
+
+Built-in metadata can be rebuilt automatically:
+
+```python
+loaded = gh.System.non_antipodal(grid)
+loaded.load("output/run.nc", rebuild_neighborhood=True)
+```
+
+The default remains `rebuild_neighborhood=False`. Automatic rebuilding raises
+a clear error when the saved run used a custom kernel, distance metric, or
+shell measure; load without rebuilding and call `compute_neighborhood(...)`
+with the custom callable in that case.
+
+## Cookbook
+
+### Spherical optimization
+
+```python
+system = (
+    gh.System.inverse(grid)
+    .compute_neighborhood(jump_distance=np.pi / 2)
+    .hemisphere_init(seed=123)
+)
+system.anneal(steps=100_000, seed=456)
+print(system.best_probability)
+```
+
+### Euclidean lattice optimization
+
+```python
+system = (
+    gh.System.square_lattice(64, 64, density=0.5)
+    .compute_neighborhood(
+        jump_distance=0.60,
+        distance_metric="euclidean",
+    )
+    .random_init(seed=123)
+)
+result = system.greedy(max_steps=1000)
+```
+
+### Weighted spherical shells
+
+```python
+system = (
+    gh.System.non_antipodal(grid)
+    .compute_neighborhood(
+        jump_distance=[0.485 * np.pi, 0.515 * np.pi],
+        jump_weights=[1.0, 0.75],
+    )
+    .random_init(seed=123)
+)
+```
+
+### Inspecting readiness
+
+```python
+summary = system.state_summary()
+print(summary["ready"], summary["kernel"], summary["jump_distance"])
+```
+
+## Common Errors
+
+- Build the neighborhood before calling an initializer. Initializers raise a
+  `RuntimeError` with the required `compute_neighborhood()` call otherwise.
+- Initialize the system before annealing, greedy optimization, parallel
+  tempering, or plotting a spherical spin state.
+- Build a neighborhood before initialization or `plot_neighbors()`.
+- Multiple jump distances are supported only for spherical systems.
+- `plot_neighbors()` and Voronoi plotting are available only for 2D Euclidean
+  systems; `plot_boundary()` is for spherical systems.
+- Loading restores spin state and neighborhood metadata, but the neighborhood
+  itself is rebuilt only when `rebuild_neighborhood=True` or when
+  `compute_neighborhood()` is called afterward.
+- Saved custom kernels, distance metrics, and shell measures cannot be
+  reconstructed from NetCDF metadata. Supply those callables again manually.
 
 ## Plotting
 
 The package includes:
 
 - `system.plot(...)`
-- `system.plot_neighbors(...)` for 2D Euclidean neighbor/correlation views
+- `system.plot_neighbors(selected_site=...)` for 2D Euclidean
+  neighbor/contribution views
 - `system.plot_boundary(...)` for spherical systems
 
 For regular 2D lattices:
@@ -411,5 +541,6 @@ python -m unittest discover -s tests -v
 ## Acceleration notes
 
 - Numba acceleration is used automatically when available.
-- GPU neighborhood helpers live in [grasshopper/build_neighbors_gpu.py](/C:/Users/polka/OneDrive/Documents/Codex/spherical_grasshopper/grasshopper/build_neighbors_gpu.py).
+- GPU neighborhood helpers live in
+  [`grasshopper/build_neighbors_gpu.py`](grasshopper/build_neighbors_gpu.py).
 - GPU support is optional and requires installing a CuPy build that matches your CUDA setup.

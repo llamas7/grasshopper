@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 
@@ -16,7 +15,6 @@ from .core import (
     AnnealData,
     AnnealSchedule,
     ConstraintModel,
-    DeltaType,
     Geometry,
     GreedyHistory,
     InteractionModel,
@@ -56,7 +54,7 @@ from .greedy import GreedyResult, greedy_optimization
 from .engines import get_engine
 from .parallel_tempering import ParallelTemperingResult, parallel_tempering
 from .plot_system import plot_spin_system, graph_boundary
-from .probability import calculate_probability, continuum_probability_prefactor
+from .probability import calculate_probability
 
 
 class System:
@@ -130,7 +128,7 @@ class System:
     grid : ndarray of shape (N, d)
         Point coordinates for the active geometry. For Euclidean systems these
         are candidate lattice sites.
-    jump_distance : float | None
+    jump_distance : float | tuple[float, ...] | None
         Last distance used to construct the current neighborhood. Prefer
         passing this to `compute_neighborhood()`.
     config : SystemConfig
@@ -178,7 +176,7 @@ class System:
     """
 
     _SAVE_FORMAT_VERSION = "4.0"
-    _SUPPORTED_SAVE_FORMAT_VERSIONS = {"3.0", "4.0"}
+    _SUPPORTED_SAVE_FORMAT_VERSIONS = {"4.0"}
 
     def __init__(
         self,
@@ -439,8 +437,12 @@ class System:
         return self._definition.grid
 
     @property
-    def jump_distance(self) -> float | None:
+    def jump_distance(self) -> float | tuple[float, ...] | None:
         return self._neighborhood_model.jump_distance
+
+    @property
+    def jump_weights(self) -> tuple[float, ...] | None:
+        return self._neighborhood_model.jump_weights
 
     @property
     def geometry(self) -> Geometry:
@@ -461,24 +463,6 @@ class System:
     @property
     def kernel(self) -> KernelSpec | Callable | None:
         return self._neighborhood_model.kernel
-
-    @property
-    def delta(self) -> DeltaType | KernelSpec | Callable | None:
-        warnings.warn(
-            "System.delta is deprecated; use System.kernel.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        kernel = self.kernel
-        if isinstance(kernel, KernelSpec):
-            legacy = {
-                "cosine": DeltaType.TWO,
-                "cell_averaged_hat": DeltaType.ONE_STAR_NAME,
-                "cell_averaged_cosine": DeltaType.TWO_STAR_NAME,
-                "exact": DeltaType.EXACT,
-            }
-            return legacy.get(kernel.kind, kernel)
-        return kernel
 
     @property
     def distance_metric(self) -> DistanceMetric | None:
@@ -503,16 +487,6 @@ class System:
     @property
     def neighborhood(self) -> NeighborhoodData | None:
         return self._neighborhood_model.neighborhood
-
-    @property
-    def prob_prefactor(self) -> float:
-        warnings.warn(
-            "System.prob_prefactor is deprecated; use probability() or "
-            "current_probability.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return continuum_probability_prefactor(self)
 
     @property
     def shell_measure(self) -> Callable[[float], float] | None:
@@ -626,6 +600,47 @@ class System:
     def occupancy(self) -> OccupancyState | None:
         return self._runtime.occupancy
 
+    def state_summary(self) -> dict[str, object]:
+        """Return a compact snapshot of system configuration and readiness."""
+        neighborhood_built = self.neighborhood is not None
+        has_current_system = self.current_system is not None
+        has_best_system = self.best_system is not None
+        kernel = self.kernel
+        metric = self.distance_metric
+        kernel_summary = (
+            "custom"
+            if kernel is None and self._neighborhood_model.kernel_is_custom
+            else self._kernel_display(kernel)
+        )
+        metric_summary = (
+            "custom"
+            if metric is None
+            and self._neighborhood_model.distance_metric_is_custom
+            else metric if isinstance(metric, str) or metric is None else repr(metric)
+        )
+        return {
+            "geometry": self.geometry.value,
+            "constraint": self.constraint.value,
+            "interaction_model": self.interaction_model.value,
+            "update_rule": self.update_rule.value,
+            "site_count": int(self.grid.shape[0]),
+            "num_spins": int(self.num_spins),
+            "dimension": int(self.dimension),
+            "system_shape": self.system_shape,
+            "neighborhood_built": neighborhood_built,
+            "initialized": bool(self.initialized),
+            "has_current_system": has_current_system,
+            "has_best_system": has_best_system,
+            "ready": neighborhood_built and bool(self.initialized),
+            "jump_distance": self.jump_distance,
+            "jump_weights": self.jump_weights,
+            "kernel": kernel_summary,
+            "distance_metric": metric_summary,
+            "current_energy": float(self.current_energy),
+            "best_energy": float(self.best_energy),
+            "temperature": float(self.temperature),
+        }
+
     @classmethod
     def _coerce_geometry(cls, value: Geometry | str) -> Geometry:
         if isinstance(value, Geometry):
@@ -730,7 +745,7 @@ class System:
     @classmethod
     def _coerce_kernel(
         cls,
-        value: KernelSpec | DeltaType | str | Callable,
+        value: KernelSpec | str | Callable,
     ) -> KernelSpec | Callable:
         if callable(value) and not isinstance(value, KernelSpec):
             return value
@@ -755,7 +770,7 @@ class System:
 
     def _resolve_kernel_for_compute(
         self,
-        kernel: KernelSpec | DeltaType | str | Callable | None,
+        kernel: KernelSpec | str | Callable | None,
     ) -> KernelSpec | Callable:
         if kernel is not None:
             return self._coerce_kernel(kernel)
@@ -795,12 +810,42 @@ class System:
     def _is_custom_distance_metric(distance_metric: DistanceMetric) -> bool:
         return not isinstance(distance_metric, str)
 
-    def _coerce_jump_distance(self, value: float | None) -> float:
+    @staticmethod
+    def _is_jump_distance_sequence(value: object) -> bool:
+        if isinstance(value, (str, bytes)):
+            return False
+        if isinstance(value, np.ndarray):
+            return value.ndim > 0
+        return isinstance(value, Sequence)
+
+    def _coerce_jump_distance(
+        self,
+        value: float | Sequence[float] | None,
+    ) -> float | tuple[float, ...]:
         if value is None:
             raise ValueError(
                 "jump_distance is required. Pass it to compute_neighborhood("
                 "jump_distance=...)."
             )
+        if self._is_jump_distance_sequence(value):
+            distances = np.asarray(value, dtype=np.float64)
+            if distances.ndim != 1 or distances.size == 0:
+                raise ValueError(
+                    "jump_distance must be a finite scalar or non-empty 1D sequence."
+                )
+            if self.geometry == Geometry.EUCLIDEAN:
+                raise ValueError(
+                    "Multiple jump distances are currently supported only for "
+                    "spherical systems."
+                )
+            if not np.all(np.isfinite(distances)):
+                raise ValueError("jump_distance values must be finite.")
+            if np.any(distances < 0):
+                raise ValueError("jump_distance values must be nonnegative.")
+            if np.any(distances > np.pi):
+                raise ValueError("Spherical jump_distance values must lie in [0, pi].")
+            return tuple(float(distance) for distance in distances)
+
         jump_distance = float(value)
         if not np.isfinite(jump_distance):
             raise ValueError(f"jump_distance must be finite, got {value!r}.")
@@ -809,6 +854,24 @@ class System:
         if self.geometry == Geometry.SPHERICAL and jump_distance > np.pi:
             raise ValueError("Spherical jump_distance must lie in [0, pi].")
         return jump_distance
+
+    @staticmethod
+    def _coerce_jump_weights(
+        value: Sequence[float] | None,
+        distance_count: int,
+    ) -> tuple[float, ...]:
+        if value is None:
+            return tuple(1.0 for _ in range(distance_count))
+        if isinstance(value, (str, bytes)):
+            raise TypeError("jump_weights must be a 1D sequence of finite numbers.")
+        weights = np.asarray(value, dtype=np.float64)
+        if weights.ndim != 1 or weights.size != distance_count:
+            raise ValueError(
+                "jump_weights must have one finite value per jump distance."
+            )
+        if not np.all(np.isfinite(weights)):
+            raise ValueError("jump_weights values must be finite.")
+        return tuple(float(weight) for weight in weights)
 
     @staticmethod
     def _coerce_radial_bounds(
@@ -981,15 +1044,15 @@ class System:
 
     def compute_neighborhood(
         self,
-        jump_distance: float | None = None,
+        jump_distance: float | Sequence[float] | None = None,
         *,
-        kernel: KernelSpec | DeltaType | str | Callable | None = None,
-        delta: DeltaType | str | Callable | None = None,
+        jump_weights: Sequence[float] | None = None,
+        kernel: KernelSpec | str | Callable | None = None,
         silent: bool = True,
         distance_metric: DistanceMetric | None = None,
         shell_measure: Callable[[float], float] | None = None,
         radial_bounds: tuple[float, float] | None = None,
-    ) -> None:
+    ) -> "System":
         """
         Build and store a neighborhood plus probability-normalization metadata.
 
@@ -998,18 +1061,31 @@ class System:
         leaves the physical jump-distance scale unchanged as long as the
         occupied-site count is unchanged.
         """
-        if kernel is not None and delta is not None:
-            raise ValueError("Pass kernel= or the deprecated delta=, not both.")
-        if delta is not None:
-            warnings.warn(
-                "delta= is deprecated; use kernel=.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            kernel = delta
-        self._neighborhood_model.jump_distance = self._coerce_jump_distance(
-            self.jump_distance if jump_distance is None else jump_distance
+        using_saved_distance = jump_distance is None
+        coerced_jump_distance = self._coerce_jump_distance(
+            self.jump_distance if using_saved_distance else jump_distance
         )
+        distance_count = (
+            len(coerced_jump_distance)
+            if isinstance(coerced_jump_distance, tuple)
+            else 1
+        )
+        if (
+            jump_weights is None
+            and using_saved_distance
+            and self.jump_weights is not None
+        ):
+            coerced_jump_weights = self._coerce_jump_weights(
+                self.jump_weights,
+                distance_count,
+            )
+        else:
+            coerced_jump_weights = self._coerce_jump_weights(
+                jump_weights,
+                distance_count,
+            )
+        self._neighborhood_model.jump_distance = coerced_jump_distance
+        self._neighborhood_model.jump_weights = coerced_jump_weights
         resolved_kernel = self._resolve_kernel_for_compute(kernel)
         self._neighborhood_model.kernel = resolved_kernel
         self._neighborhood_model.kernel_is_custom = self._is_custom_kernel(
@@ -1043,7 +1119,7 @@ class System:
             rows = build_euclidean_neighborhood(
                 self.grid,
                 self.jump_distance,
-                delta=self._kernel_argument(resolved_kernel),
+                kernel=self._kernel_argument(resolved_kernel),
                 silent=silent,
                 distance_metric=metric,
                 occupied_sites=self.num_spins,
@@ -1052,20 +1128,22 @@ class System:
                 NonAntipodalNeighborhoodCSR.from_rows(rows)
             )
             self._refresh_energies_after_neighborhood_build()
-            return
+            return self
 
         rows = build_neighborhood(
             self.grid,
             self.jump_distance,
             antipodal=self.antipodal,
-            delta=self._kernel_argument(resolved_kernel),
+            kernel=self._kernel_argument(resolved_kernel),
             silent=silent,
             distance_metric=metric,
+            jump_weights=self.jump_weights,
         )
         self._neighborhood_model.neighborhood = (
             rows if self.antipodal else NonAntipodalNeighborhoodCSR.from_rows(rows)
         )
         self._refresh_energies_after_neighborhood_build()
+        return self
 
     def _refresh_energies_after_neighborhood_build(self) -> None:
         if self.neighborhood is None:
@@ -1116,6 +1194,7 @@ class System:
             kernel=self.kernel,
             kernel_is_custom=self._neighborhood_model.kernel_is_custom,
             jump_distance=self.jump_distance,
+            jump_weights=self.jump_weights,
             distance_metric=self.distance_metric,
             distance_metric_is_custom=self._neighborhood_model.distance_metric_is_custom,
             shell_measure=self.shell_measure,
@@ -1160,32 +1239,37 @@ class System:
         self._runtime.restore_state(state)
 
     # --- initializers ---
-    def random_init(self, seed: Seed = None) -> None:
+    def random_init(self, seed: Seed = None) -> "System":
         self._require_neighborhood()
         init_random(self, seed=seed)
         self._runtime.initialized = True
+        return self
 
-    def hemisphere_init(self, seed: Seed = None) -> None:
+    def hemisphere_init(self, seed: Seed = None) -> "System":
         self._require_neighborhood()
         if self.geometry == Geometry.EUCLIDEAN:
             raise ValueError("hemisphere_init() requires a spherical grid.")
         init_random_hemisphere(self, seed=seed)
         self._runtime.initialized = True
+        return self
 
-    def tri_cog_init(self, num_cogs: int, cog_height: float) -> None:
+    def tri_cog_init(self, num_cogs: int, cog_height: float) -> "System":
         self._require_neighborhood()
         init_triangle_cogwheel(self, num_cogs, cog_height)
         self._runtime.initialized = True
+        return self
 
-    def cos_cog_init(self, num_cogs: int, cog_height: float) -> None:
+    def cos_cog_init(self, num_cogs: int, cog_height: float) -> "System":
         self._require_neighborhood()
         init_cosine_cogwheel(self, num_cogs, cog_height)
         self._runtime.initialized = True
+        return self
 
-    def array_init(self, spin_array: NDArray[np.bool_]) -> None:
+    def array_init(self, spin_array: NDArray[np.bool_]) -> "System":
         self._require_neighborhood()
         init_from_array(self, spin_array)
         self._runtime.initialized = True
+        return self
 
     # --- Annealing ---
     def anneal(
@@ -1627,7 +1711,19 @@ class System:
             ),
         }
         if self.jump_distance is not None:
-            attrs["jump_distance"] = float(self.jump_distance)
+            if isinstance(self.jump_distance, tuple):
+                attrs["jump_distances_json"] = json.dumps(
+                    [float(distance) for distance in self.jump_distance]
+                )
+                attrs["jump_weights_json"] = json.dumps(
+                    [float(weight) for weight in (self.jump_weights or ())]
+                )
+            else:
+                attrs["jump_distance"] = float(self.jump_distance)
+                if self.jump_weights not in (None, (1.0,)):
+                    attrs["jump_weights_json"] = json.dumps(
+                        [float(weight) for weight in self.jump_weights]
+                    )
         attrs.update(self._kernel_metadata())
         attrs.update(self._normalization_metadata())
         attrs.update(self._distance_metric_metadata())
@@ -1641,15 +1737,20 @@ class System:
         self.to_dataset().to_netcdf(netcdf_path)
         return netcdf_path
 
-    def load(self, load_path: str | Path) -> None:
+    def load(
+        self,
+        load_path: str | Path,
+        *,
+        rebuild_neighborhood: bool = False,
+        silent: bool = True,
+    ) -> None:
         """
         Load state from NetCDF saved by `save()` without touching `self.grid`.
         Validates that the saved state matches this instance's grid shape and configuration.
-        Rebuild neighborhood yourself after loading if needed.
+        Optionally rebuild the neighborhood from saved built-in metadata.
 
         The grid itself is supplied by the live `System` instance and must
-        match the saved candidate-site metadata. Save formats 3.0 and 4.0 are
-        accepted; version 3 delta metadata is migrated to `KernelSpec`.
+        match the saved candidate-site metadata.
         """
         load_path = Path(load_path)
         if not load_path.exists():
@@ -1665,45 +1766,35 @@ class System:
             )
 
         saved_config = self._config_from_dataset_attrs(ds)
-        if format_version == "3.0":
-            saved_kernel_custom = bool(ds.attrs.get("delta_custom", False))
-            saved_kernel = (
+        saved_kernel_custom = bool(ds.attrs.get("kernel_custom", False))
+        kernel_kind = str(self._require_dataset_attr(ds, "kernel_kind"))
+        if saved_kernel_custom:
+            saved_kernel = None
+        elif kernel_kind == "gaussian":
+            cutoff = (
                 None
-                if saved_kernel_custom
-                else KernelSpec.from_value(self._require_dataset_attr(ds, "delta"))
+                if bool(ds.attrs.get("gaussian_cutoff_unbounded", False))
+                else float(self._require_dataset_attr(ds, "gaussian_cutoff"))
             )
-            saved_shell_measure_custom = False
-            saved_radial_bounds = None
+            saved_kernel = KernelSpec.gaussian(
+                float(self._require_dataset_attr(ds, "gaussian_sigma")),
+                cutoff=cutoff,
+            )
         else:
-            saved_kernel_custom = bool(ds.attrs.get("kernel_custom", False))
-            kernel_kind = str(self._require_dataset_attr(ds, "kernel_kind"))
-            if saved_kernel_custom:
-                saved_kernel = None
-            elif kernel_kind == "gaussian":
-                cutoff = (
-                    None
-                    if bool(ds.attrs.get("gaussian_cutoff_unbounded", False))
-                    else float(self._require_dataset_attr(ds, "gaussian_cutoff"))
-                )
-                saved_kernel = KernelSpec.gaussian(
-                    float(self._require_dataset_attr(ds, "gaussian_sigma")),
-                    cutoff=cutoff,
-                )
-            else:
-                saved_kernel = KernelSpec.from_value(kernel_kind)
-            saved_shell_measure_custom = bool(
-                ds.attrs.get("shell_measure_custom", False)
-            )
-            if "radial_bounds_json" in ds.attrs:
-                try:
-                    raw_bounds = json.loads(str(ds.attrs["radial_bounds_json"]))
-                except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                    raise ValueError(
-                        "Saved radial_bounds_json is not valid JSON."
-                    ) from exc
-                saved_radial_bounds = self._coerce_radial_bounds(tuple(raw_bounds))
-            else:
-                saved_radial_bounds = None
+            saved_kernel = KernelSpec.from_value(kernel_kind)
+        saved_shell_measure_custom = bool(
+            ds.attrs.get("shell_measure_custom", False)
+        )
+        if "radial_bounds_json" in ds.attrs:
+            try:
+                raw_bounds = json.loads(str(ds.attrs["radial_bounds_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    "Saved radial_bounds_json is not valid JSON."
+                ) from exc
+            saved_radial_bounds = self._coerce_radial_bounds(tuple(raw_bounds))
+        else:
+            saved_radial_bounds = None
 
         # 1) Validate against current instance (grid must already exist)
         if not isinstance(self.grid, np.ndarray) or self.grid.ndim != 2:
@@ -1758,11 +1849,55 @@ class System:
         )
         self._neighborhood_model.kernel = saved_kernel
         self._neighborhood_model.kernel_is_custom = saved_kernel_custom
-        self._neighborhood_model.jump_distance = (
-            self._coerce_jump_distance(ds.attrs["jump_distance"])
-            if "jump_distance" in ds.attrs
-            else None
-        )
+        if "jump_distances_json" in ds.attrs:
+            try:
+                saved_jump_distances = json.loads(str(ds.attrs["jump_distances_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    "Saved jump_distances_json is not valid JSON."
+                ) from exc
+            self._neighborhood_model.jump_distance = self._coerce_jump_distance(
+                saved_jump_distances
+            )
+            if "jump_weights_json" in ds.attrs:
+                try:
+                    saved_jump_weights = json.loads(str(ds.attrs["jump_weights_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        "Saved jump_weights_json is not valid JSON."
+                    ) from exc
+                self._neighborhood_model.jump_weights = self._coerce_jump_weights(
+                    saved_jump_weights,
+                    len(self._neighborhood_model.jump_distance),
+                )
+            else:
+                self._neighborhood_model.jump_weights = self._coerce_jump_weights(
+                    None,
+                    len(self._neighborhood_model.jump_distance),
+                )
+        elif "jump_distance" in ds.attrs:
+            self._neighborhood_model.jump_distance = self._coerce_jump_distance(
+                ds.attrs["jump_distance"]
+            )
+            if "jump_weights_json" in ds.attrs:
+                try:
+                    saved_jump_weights = json.loads(str(ds.attrs["jump_weights_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        "Saved jump_weights_json is not valid JSON."
+                    ) from exc
+                self._neighborhood_model.jump_weights = self._coerce_jump_weights(
+                    saved_jump_weights,
+                    1,
+                )
+            else:
+                self._neighborhood_model.jump_weights = self._coerce_jump_weights(
+                    None,
+                    1,
+                )
+        else:
+            self._neighborhood_model.jump_distance = None
+            self._neighborhood_model.jump_weights = None
         self._neighborhood_model.shell_measure = None
         self._neighborhood_model.shell_measure_is_custom = (
             saved_shell_measure_custom
@@ -1858,3 +1993,6 @@ class System:
         # 5) If no spin state present, mark uninitialized
         if self.current_system is None and self.best_system is None:
             self._runtime.initialized = False
+
+        if rebuild_neighborhood:
+            self.compute_neighborhood(silent=silent)

@@ -29,15 +29,11 @@ GPUCompactKernelName = Literal[
     "cosine",
     "cell_averaged_hat",
     "cell_averaged_cosine",
-    "two",
-    "one_star",
-    "two_star",
 ]
-GPUDiscreteDeltaName = GPUCompactKernelName
 
 
 # ============================================================
-# GPU delta kernels
+# GPU kernels
 # ============================================================
 
 
@@ -113,13 +109,6 @@ def get_compact_kernel_gpu(
     raise ValueError(f"Unsupported GPU compact kernel: {kernel_name!r}")
 
 
-# Compatibility aliases for the original discrete-delta terminology.
-delta_two_gpu = cosine_kernel_gpu
-delta_one_star_gpu = cell_averaged_hat_kernel_gpu
-delta_two_star_gpu = cell_averaged_cosine_kernel_gpu
-get_delta_kernel_gpu = get_compact_kernel_gpu
-
-
 # ============================================================
 # GPU helpers
 # ============================================================
@@ -157,7 +146,7 @@ def compute_gpu_contributions_from_angles(
     angles_gpu: cp.ndarray,
     jump_distance: float,
     cell_length: float,
-    delta_func_gpu,
+    kernel_func_gpu,
     cos_lo: float,
     cos_hi: float,
 ) -> tuple[cp.ndarray, cp.ndarray]:
@@ -165,7 +154,10 @@ def compute_gpu_contributions_from_angles(
     annulus_mask_gpu = (dot_products_gpu >= cos_lo) & (dot_products_gpu <= cos_hi)
 
     abs_distances_gpu = cp.abs(jump_distance - angles_gpu)
-    contributions_gpu, kernel_mask_gpu = delta_func_gpu(abs_distances_gpu, cell_length)
+    contributions_gpu, kernel_mask_gpu = kernel_func_gpu(
+        abs_distances_gpu,
+        cell_length,
+    )
 
     valid_mask_gpu = annulus_mask_gpu & kernel_mask_gpu
     contributions_gpu = cp.where(valid_mask_gpu, contributions_gpu, 0.0)
@@ -206,7 +198,7 @@ def build_neighborhood_gpu(
     grid_points: np.ndarray,
     jump_distance: float,
     antipodal: bool = True,
-    delta: GPUCompactKernelName = "cosine",
+    kernel: GPUCompactKernelName = "cosine",
     silent: bool = True,
     batch_size: int = 128,
 ) -> list[Neighborhood] | list[NonAntipodalNeighborhood]:
@@ -215,14 +207,14 @@ def build_neighborhood_gpu(
         return build_antipodal_neighborhood_gpu(
             grid_points=grid_points,
             jump_distance=jump_distance,
-            delta=delta,
+            kernel=kernel,
             silent=silent,
             batch_size=batch_size,
         )
     return build_nonantipodal_neighborhood_gpu(
         grid_points=grid_points,
         jump_distance=jump_distance,
-        delta=delta,
+        kernel=kernel,
         silent=silent,
         batch_size=batch_size,
     )
@@ -231,7 +223,7 @@ def build_neighborhood_gpu(
 def build_antipodal_neighborhood_gpu(
     grid_points: np.ndarray,
     jump_distance: float,
-    delta: GPUCompactKernelName = "cosine",
+    kernel: GPUCompactKernelName = "cosine",
     silent: bool = True,
     batch_size: int = 128,
 ) -> list[Neighborhood]:
@@ -248,7 +240,7 @@ def build_antipodal_neighborhood_gpu(
     jump_distance = float(abs(jump_distance) % np.pi)
     cell_length = float(np.sqrt((4.0 * np.pi) / num_points))
 
-    delta_func_gpu, interaction_spread = get_compact_kernel_gpu(delta)
+    kernel_func_gpu, interaction_spread = get_compact_kernel_gpu(kernel)
     cos_lo, cos_hi = get_support_window_cosines_gpu(
         jump_distance=jump_distance,
         interaction_spread=interaction_spread,
@@ -271,7 +263,7 @@ def build_antipodal_neighborhood_gpu(
                 angles_gpu=positive_angles_gpu,
                 jump_distance=jump_distance,
                 cell_length=cell_length,
-                delta_func_gpu=delta_func_gpu,
+                kernel_func_gpu=kernel_func_gpu,
                 cos_lo=cos_lo,
                 cos_hi=cos_hi,
             )
@@ -283,7 +275,7 @@ def build_antipodal_neighborhood_gpu(
                 angles_gpu=negative_angles_gpu,
                 jump_distance=jump_distance,
                 cell_length=cell_length,
-                delta_func_gpu=delta_func_gpu,
+                kernel_func_gpu=kernel_func_gpu,
                 cos_lo=cos_lo,
                 cos_hi=cos_hi,
             )
@@ -321,7 +313,7 @@ def build_antipodal_neighborhood_gpu(
 def build_nonantipodal_neighborhood_gpu(
     grid_points: np.ndarray,
     jump_distance: float,
-    delta: GPUCompactKernelName = "cosine",
+    kernel: GPUCompactKernelName = "cosine",
     silent: bool = True,
     batch_size: int = 128,
 ) -> list[NonAntipodalNeighborhood]:
@@ -335,7 +327,7 @@ def build_nonantipodal_neighborhood_gpu(
     jump_distance = float(abs(jump_distance) % np.pi)
     cell_length = float(np.sqrt((4.0 * np.pi) / num_spins))
 
-    delta_func_gpu, interaction_spread = get_compact_kernel_gpu(delta)
+    kernel_func_gpu, interaction_spread = get_compact_kernel_gpu(kernel)
     cos_lo, cos_hi = get_support_window_cosines_gpu(
         jump_distance=jump_distance,
         interaction_spread=interaction_spread,
@@ -355,7 +347,7 @@ def build_nonantipodal_neighborhood_gpu(
             angles_gpu=angles_gpu,
             jump_distance=jump_distance,
             cell_length=cell_length,
-            delta_func_gpu=delta_func_gpu,
+            kernel_func_gpu=kernel_func_gpu,
             cos_lo=cos_lo,
             cos_hi=cos_hi,
         )

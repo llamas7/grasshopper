@@ -2,7 +2,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
-import warnings
 import numpy as np
 from numpy.typing import NDArray
 
@@ -571,19 +570,6 @@ class UpdateRule(str, Enum):
     SWAP = "swap"
 
 
-class DeltaType(str, Enum):
-    TWO = "two"
-    ONE_STAR = "one*"
-    ONE_STAR_NAME = "one_star"
-    TWO_STAR = "two*"
-    TWO_STAR_NAME = "two_star"
-    EXACT = "exact"
-    EXACT_DELTA = "exact_delta"
-    REAL_DELTA = "real_delta"
-    DELTA = "delta"
-    DIRAC = "dirac"
-
-
 @dataclass(frozen=True)
 class KernelSpec:
     """Serializable specification for a built-in radial interaction kernel."""
@@ -595,21 +581,9 @@ class KernelSpec:
     def __post_init__(self) -> None:
         aliases = {
             "cosine": "cosine",
-            "compact_cosine": "cosine",
-            "two": "cosine",
             "cell_averaged_hat": "cell_averaged_hat",
-            "quadratic_bspline": "cell_averaged_hat",
-            "one*": "cell_averaged_hat",
-            "one_star": "cell_averaged_hat",
             "cell_averaged_cosine": "cell_averaged_cosine",
-            "smoothed_cosine": "cell_averaged_cosine",
-            "two*": "cell_averaged_cosine",
-            "two_star": "cell_averaged_cosine",
-            "delta": "exact",
-            "dirac": "exact",
             "exact": "exact",
-            "exact_delta": "exact",
-            "real_delta": "exact",
             "gaussian": "gaussian",
         }
         key = str(self.kind).lower().replace("-", "_")
@@ -657,35 +631,6 @@ class KernelSpec:
         return cls("cell_averaged_cosine")
 
     @classmethod
-    def two(cls) -> "KernelSpec":
-        warnings.warn(
-            "KernelSpec.two() is deprecated; use KernelSpec.cosine().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return cls.cosine()
-
-    @classmethod
-    def one_star(cls) -> "KernelSpec":
-        warnings.warn(
-            "KernelSpec.one_star() is deprecated; use "
-            "KernelSpec.cell_averaged_hat().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return cls.cell_averaged_hat()
-
-    @classmethod
-    def two_star(cls) -> "KernelSpec":
-        warnings.warn(
-            "KernelSpec.two_star() is deprecated; use "
-            "KernelSpec.cell_averaged_cosine().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return cls.cell_averaged_cosine()
-
-    @classmethod
     def exact(cls) -> "KernelSpec":
         return cls("exact")
 
@@ -700,15 +645,13 @@ class KernelSpec:
     @classmethod
     def from_value(
         cls,
-        value: "KernelSpec | DeltaType | str",
+        value: "KernelSpec | str",
     ) -> "KernelSpec":
         if isinstance(value, cls):
             return value
-        if isinstance(value, DeltaType):
-            return cls(value.value)
         if isinstance(value, str):
             return cls(value)
-        raise TypeError("kernel must be a KernelSpec, DeltaType, string, or callable.")
+        raise TypeError("kernel must be a KernelSpec, string, or callable.")
 
 
 @dataclass(frozen=True)
@@ -854,7 +797,8 @@ class NeighborhoodModel:
 
     kernel: KernelSpec | Callable[..., Any] | None
     kernel_is_custom: bool = False
-    jump_distance: float | None = None
+    jump_distance: float | tuple[float, ...] | None = None
+    jump_weights: tuple[float, ...] | None = None
     distance_metric: Any | None = None
     distance_metric_is_custom: bool = False
     shell_measure: Callable[[float], float] | None = None

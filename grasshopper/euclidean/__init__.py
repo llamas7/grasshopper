@@ -18,7 +18,6 @@ from ..lattices import (
 )
 from .build_neighbors import (
     build_euclidean_neighborhood,
-    calculate_prob_prefactor_euclidean,
     estimate_bounding_box_volume,
     normalize_euclidean_grid,
 )
@@ -26,7 +25,6 @@ from .build_neighbors import (
 __all__ = [
     "DistanceMetric",
     "build_euclidean_neighborhood",
-    "calculate_prob_prefactor_euclidean",
     "estimate_bounding_box_volume",
     "hexagonal_lattice",
     "honeycomb_lattice",
