@@ -24,7 +24,7 @@ class _PackedNeighborhood:
     negative_indptr: np.ndarray
     negative_spins: np.ndarray
     negative_contributions: np.ndarray
-    spin_potential: np.ndarray
+    total_weight: np.ndarray
 
 
 _PACKED_NEIGHBORHOOD_CACHE: dict[int, _PackedNeighborhood] = {}
@@ -89,8 +89,8 @@ def _pack_neighborhood(neighborhood: list[Neighborhood]) -> _PackedNeighborhood:
         negative_indptr=negative_indptr,
         negative_spins=negative_spins,
         negative_contributions=negative_contributions,
-        spin_potential=np.ascontiguousarray(
-            np.asarray([row.spin_potential for row in neighborhood], dtype=np.float64)
+        total_weight=np.ascontiguousarray(
+            np.asarray([row.total_weight for row in neighborhood], dtype=np.float64)
         ),
     )
     _PACKED_NEIGHBORHOOD_CACHE[id(neighborhood)] = packed
@@ -100,7 +100,7 @@ def _pack_neighborhood(neighborhood: list[Neighborhood]) -> _PackedNeighborhood:
 if NUMBA_AVAILABLE:
 
     @njit(cache=True)
-    def _inverse_recompute_energy_grid(
+    def _complementary_recompute_energy_grid(
         current_system,
         positive_indptr,
         positive_spins,
@@ -108,7 +108,7 @@ if NUMBA_AVAILABLE:
         negative_indptr,
         negative_spins,
         negative_contributions,
-        spin_potential,
+        total_weight,
     ):
         n_spins = current_system.size
         energy_grid = np.empty(n_spins, dtype=np.float64)
@@ -128,7 +128,7 @@ if NUMBA_AVAILABLE:
                 if spin_state != current_system[neighbor_idx]:
                     row_energy += negative_contributions[edge]
 
-            energy_grid[spin_idx] = spin_potential[spin_idx] - 2.0 * row_energy
+            energy_grid[spin_idx] = total_weight[spin_idx] - 2.0 * row_energy
             total_energy += row_energy
 
         return energy_grid, 0.5 * total_energy
@@ -143,7 +143,7 @@ if NUMBA_AVAILABLE:
         negative_indptr,
         negative_spins,
         negative_contributions,
-        spin_potential,
+        total_weight,
     ):
         n_spins = current_system.shape[0]
         energy_grid = np.empty((n_spins, 2), dtype=np.float64)
@@ -173,15 +173,15 @@ if NUMBA_AVAILABLE:
                 if anti_b != current_system[neighbor_idx, 0]:
                     row_energy_b += contribution
 
-            energy_grid[spin_idx, 0] = 0.5 * (spin_potential[spin_idx] - 2.0 * row_energy_a)
-            energy_grid[spin_idx, 1] = 0.5 * (spin_potential[spin_idx] - 2.0 * row_energy_b)
+            energy_grid[spin_idx, 0] = 0.5 * (total_weight[spin_idx] - 2.0 * row_energy_a)
+            energy_grid[spin_idx, 1] = 0.5 * (total_weight[spin_idx] - 2.0 * row_energy_b)
             total_energy += row_energy_a
 
         return energy_grid, 0.5 * total_energy
 
 
     @njit(cache=True)
-    def _inverse_metropolis_sweep(
+    def _complementary_metropolis_sweep(
         current_system,
         energy_grid,
         positive_indptr,
@@ -299,9 +299,9 @@ if NUMBA_AVAILABLE:
 
 
 else:
-    _inverse_recompute_energy_grid = None
+    _complementary_recompute_energy_grid = None
     _independent_recompute_energy_grid = None
-    _inverse_metropolis_sweep = None
+    _complementary_metropolis_sweep = None
     _independent_metropolis_sweep = None
 
 
@@ -324,7 +324,7 @@ def compute_spinflip_numba_energy_grid(
         return None
 
     if system_states.ndim == 1:
-        return _inverse_recompute_energy_grid(
+        return _complementary_recompute_energy_grid(
             system_states,
             packed.positive_indptr,
             packed.positive_spins,
@@ -332,7 +332,7 @@ def compute_spinflip_numba_energy_grid(
             packed.negative_indptr,
             packed.negative_spins,
             packed.negative_contributions,
-            packed.spin_potential,
+            packed.total_weight,
         )
 
     if system_states.ndim == 2 and system_states.shape[1] == 2:
@@ -344,7 +344,7 @@ def compute_spinflip_numba_energy_grid(
             packed.negative_indptr,
             packed.negative_spins,
             packed.negative_contributions,
-            packed.spin_potential,
+            packed.total_weight,
         )
 
     return None
@@ -370,7 +370,7 @@ def run_spinflip_numba_sweep(
 
     random_seed = int(np.random.randint(0, np.iinfo(np.int32).max))
     if system.current_system.ndim == 1 and energy_array.ndim == 1:
-        acceptance, current_energy, best_energy = _inverse_metropolis_sweep(
+        acceptance, current_energy, best_energy = _complementary_metropolis_sweep(
             system.current_system,
             energy_array,
             packed.positive_indptr,

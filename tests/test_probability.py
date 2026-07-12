@@ -93,7 +93,7 @@ class ProbabilityTests(unittest.TestCase):
         self.assertAlmostEqual(mass, cell_length, places=10)
 
     def test_continuum_prefactors_match_dissertation_formulas(self) -> None:
-        sphere = gh.System.inverse(spherical_grid())
+        sphere = gh.System.complementary(spherical_grid())
         theta = np.pi / 3.0
         sphere.compute_neighborhood(theta, kernel=gh.KernelSpec.cosine())
         expected_sphere = 4.0 / (
@@ -117,7 +117,7 @@ class ProbabilityTests(unittest.TestCase):
     def test_multi_shell_continuum_prefactor_uses_weighted_radial_mass(self) -> None:
         distances = (np.pi / 3.0, np.pi / 2.0)
         weights = (1.0, 0.5)
-        sphere = gh.System.inverse(spherical_grid())
+        sphere = gh.System.complementary(spherical_grid())
         sphere.compute_neighborhood(
             distances,
             jump_weights=weights,
@@ -140,7 +140,7 @@ class ProbabilityTests(unittest.TestCase):
     def test_probability_api_supports_current_best_and_arbitrary_states(self) -> None:
         systems_and_states = [
             (
-                gh.System.inverse(spherical_grid()),
+                gh.System.complementary(spherical_grid()),
                 np.array([True, False, True], dtype=bool),
             ),
             (
@@ -176,14 +176,14 @@ class ProbabilityTests(unittest.TestCase):
             self.assertTrue(np.isfinite(system.best_graph_probability))
 
     def test_antipodal_graph_probability_is_half_at_right_angle(self) -> None:
-        inverse = gh.System.inverse(spherical_grid())
-        inverse.compute_neighborhood(np.pi / 2)
+        complementary = gh.System.complementary(spherical_grid())
+        complementary.compute_neighborhood(np.pi / 2)
         for state in (
             np.array([True, False, True], dtype=bool),
             np.array([False, False, False], dtype=bool),
         ):
             self.assertAlmostEqual(
-                inverse.probability(state, normalization="graph"),
+                complementary.probability(state, normalization="graph"),
                 0.5,
             )
 
@@ -249,8 +249,8 @@ class ProbabilityTests(unittest.TestCase):
             kernel=gh.KernelSpec.gaussian(0.3, cutoff=None),
         )
         np.testing.assert_allclose(
-            sparse.neighborhood.spin_potential,
-            full.neighborhood.spin_potential,
+            sparse.neighborhood.total_weight,
+            full.neighborhood.total_weight,
             atol=3e-6,
             rtol=0,
         )
@@ -315,23 +315,23 @@ class ProbabilityTests(unittest.TestCase):
                 -0.1
             )
         with self.assertRaisesRegex(ValueError, r"\[0, pi\]"):
-            gh.System.inverse(spherical_grid()).compute_neighborhood(np.pi + 0.1)
+            gh.System.complementary(spherical_grid()).compute_neighborhood(np.pi + 0.1)
 
     def test_sharp_endpoints_reject_continuum_but_gaussian_is_defined(self) -> None:
         state = np.array([True, False, True], dtype=bool)
-        sharp = gh.System.inverse(spherical_grid())
+        sharp = gh.System.complementary(spherical_grid())
         sharp.compute_neighborhood(0.0)
         with self.assertRaisesRegex(ValueError, "degenerate"):
             sharp.probability(state)
 
-        gaussian = gh.System.inverse(spherical_grid())
+        gaussian = gh.System.complementary(spherical_grid())
         gaussian.compute_neighborhood(
             0.0,
             kernel=gh.KernelSpec.gaussian(0.2, cutoff=None),
         )
         self.assertTrue(np.isfinite(gaussian.probability(state)))
 
-    def test_version_four_gaussian_roundtrip_and_version_three_rejection(self) -> None:
+    def test_version_five_gaussian_roundtrip_and_version_three_rejection(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
         system.compute_neighborhood(
@@ -339,7 +339,7 @@ class ProbabilityTests(unittest.TestCase):
             kernel=gh.KernelSpec.gaussian(0.2, cutoff=None),
         )
         system.array_init(np.array([True, False, True, False], dtype=bool))
-        path = system.save(test_dir / "v4.nc")
+        path = system.save(test_dir / "v5.nc")
 
         loaded = gh.System.euclidean(euclidean_grid(), num_spins=2)
         loaded.load(path)
@@ -360,6 +360,27 @@ class ProbabilityTests(unittest.TestCase):
         rejected = gh.System.euclidean(euclidean_grid(), num_spins=2)
         with self.assertRaisesRegex(ValueError, "Unsupported saved-state"):
             rejected.load(legacy_path)
+
+    def test_version_four_inverse_metadata_migrates_to_complementary(self) -> None:
+        test_dir = make_test_dir(self.id().replace(".", "_"))
+        system = gh.System.complementary(spherical_grid())
+        system.compute_neighborhood(np.pi / 2)
+        system.array_init(np.array([True, False, True], dtype=bool))
+
+        legacy = system.to_dataset()
+        legacy.attrs["format_version"] = "4.0"
+        legacy.attrs["interaction_model"] = "inverse"
+        legacy_path = test_dir / "v4_complementary.nc"
+        legacy.to_netcdf(legacy_path)
+
+        loaded = gh.System.complementary(spherical_grid())
+        loaded.load(legacy_path, rebuild_neighborhood=True)
+
+        self.assertEqual(
+            loaded.interaction_model,
+            gh.InteractionModel.COMPLEMENTARY,
+        )
+        self.assertAlmostEqual(loaded.current_energy, system.current_energy)
 
     def test_custom_shell_measure_must_be_resupplied_after_load(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))

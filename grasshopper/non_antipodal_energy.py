@@ -8,32 +8,32 @@ if TYPE_CHECKING:
     from .system import System
 
 
-def calculate_non_antipodal_system_potential(
+def calculate_non_antipodal_available_weight(
         system_states: NDArray[np.bool_],
         neighborhood: list[NonAntipodalNeighborhood] | NonAntipodalNeighborhoodCSR,
 ):
     if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
-        return float(0.5 * np.sum(neighborhood.spin_potential[system_states]))
-    total_potential = 0
+        return float(0.5 * np.sum(neighborhood.total_weight[system_states]))
+    available_weight = 0
     for i, spin_neighbors in enumerate(neighborhood):
         if system_states[i]:
-            total_potential += spin_neighbors.spin_potential
-    return total_potential / 2
+            available_weight += spin_neighbors.total_weight
+    return available_weight / 2
 
 
 def calculate_non_antipodal_system_probability(
         system_states: NDArray[np.bool_],
         neighborhood: list[NonAntipodalNeighborhood] | NonAntipodalNeighborhoodCSR,
 ):
-    total_potential = calculate_non_antipodal_system_potential(
+    available_weight = calculate_non_antipodal_available_weight(
         system_states, neighborhood
     )
     total_energy = calculate_non_antipodal_system_energy(system_states, neighborhood)
-    if total_potential == 0:
+    if available_weight == 0:
         raise ZeroDivisionError(
-            "Cannot calculate non-antipodal probability with zero system potential."
+            "Cannot calculate non-antipodal probability with zero available weight."
         )
-    return total_energy / total_potential
+    return total_energy / available_weight
 
 
 # def calculate_non_antipodal_spin_energy(

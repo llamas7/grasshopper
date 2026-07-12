@@ -1,6 +1,6 @@
 from __future__ import annotations
 from .core import Neighborhood
-from .inverse_energy import calculate_spin_energy, calculate_spin_delta_energy
+from .complementary_energy import calculate_spin_energy, calculate_spin_delta_energy
 import numpy as np
 from numpy.typing import NDArray
 

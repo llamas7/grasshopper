@@ -175,8 +175,8 @@ class System:
       include the grid itself; the same grid must exist on the object before `load()`.
     """
 
-    _SAVE_FORMAT_VERSION = "4.0"
-    _SUPPORTED_SAVE_FORMAT_VERSIONS = {"4.0"}
+    _SAVE_FORMAT_VERSION = "5.0"
+    _SUPPORTED_SAVE_FORMAT_VERSIONS = {"4.0", "5.0"}
 
     def __init__(
         self,
@@ -207,9 +207,9 @@ class System:
         self._runtime = OptimizationRuntime()
 
     @classmethod
-    def inverse(cls, grid: NDArray[np.float64]) -> "System":
-        """Construct a spherical antipodal inverse system."""
-        return cls(grid, config=SystemConfig.inverse())
+    def complementary(cls, grid: NDArray[np.float64]) -> "System":
+        """Construct a spherical antipodal complementary system."""
+        return cls(grid, config=SystemConfig.complementary())
 
     @classmethod
     def independent(cls, grid: NDArray[np.float64]) -> "System":
@@ -686,7 +686,7 @@ class System:
         if isinstance(value, str):
             normalized = value.lower().replace("_", "-")
             aliases = {
-                "inverse": InteractionModel.INVERSE,
+                "complementary": InteractionModel.COMPLEMENTARY,
                 "independent": InteractionModel.INDEPENDENT,
                 "occupancy": InteractionModel.OCCUPANCY,
                 "pairwise-occupancy": InteractionModel.OCCUPANCY,
@@ -999,7 +999,8 @@ class System:
         if config.antipodal:
             if n_sites % 2 != 0:
                 raise ValueError(
-                    "INVERSE and INDEPENDENT systems require an even number of lattice sites. "
+                    "Complementary and independent systems require an even number "
+                    "of lattice sites. "
                     "The second half of lattice sites are assumed to be antipodes of the first half."
                 )
 
@@ -1558,15 +1559,21 @@ class System:
         return ds.attrs[key]
 
     @classmethod
-    def _config_from_dataset_attrs(cls, ds: xr.Dataset) -> SystemConfig:
+    def _config_from_dataset_attrs(
+        cls,
+        ds: xr.Dataset,
+        *,
+        format_version: str,
+    ) -> SystemConfig:
+        interaction_model = cls._require_dataset_attr(ds, "interaction_model")
+        if format_version == "4.0" and interaction_model == "inverse":
+            interaction_model = InteractionModel.COMPLEMENTARY
         return SystemConfig(
             geometry=cls._coerce_geometry(cls._require_dataset_attr(ds, "geometry")),
             constraint=cls._coerce_constraint(
                 cls._require_dataset_attr(ds, "constraint")
             ),
-            interaction_model=cls._coerce_interaction_model(
-                cls._require_dataset_attr(ds, "interaction_model")
-            ),
+            interaction_model=cls._coerce_interaction_model(interaction_model),
             update_rule=cls._coerce_update_rule(
                 cls._require_dataset_attr(ds, "update_rule")
             ),
@@ -1765,7 +1772,10 @@ class System:
                 f"{sorted(self._SUPPORTED_SAVE_FORMAT_VERSIONS)!r}."
             )
 
-        saved_config = self._config_from_dataset_attrs(ds)
+        saved_config = self._config_from_dataset_attrs(
+            ds,
+            format_version=format_version,
+        )
         saved_kernel_custom = bool(ds.attrs.get("kernel_custom", False))
         kernel_kind = str(self._require_dataset_attr(ds, "kernel_kind"))
         if saved_kernel_custom:

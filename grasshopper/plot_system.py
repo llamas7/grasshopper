@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from matplotlib.collections import LineCollection
+from matplotlib.patches import Polygon
 from numpy.typing import NDArray
 from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
@@ -243,23 +245,23 @@ def _infer_2d_lattice_edges(
     return np.asarray(pairs, dtype=np.int64)
 
 
-def _edge_trace_2d(
+def _draw_edges_2d(
+        ax,
         points: NDArray[np.float64],
         edges: NDArray[np.int64],
-) -> go.Scatter:
-    x_values: list[float | None] = []
-    y_values: list[float | None] = []
-    for left, right in edges:
-        x_values.extend([points[left, 0], points[right, 0], None])
-        y_values.extend([points[left, 1], points[right, 1], None])
-    return go.Scatter(
-        x=x_values,
-        y=y_values,
-        mode="lines",
-        line=dict(color="rgba(90, 90, 90, 0.35)", width=1),
-        hoverinfo="skip",
-        showlegend=False,
-        name="lattice edges",
+) -> None:
+    segments = np.asarray(
+        [[points[left], points[right]] for left, right in edges],
+        dtype=float,
+    )
+    ax.add_collection(
+        LineCollection(
+            segments,
+            colors=[(0.35, 0.35, 0.35, 0.35)],
+            linewidths=1.0,
+            label="lattice edges",
+            zorder=1,
+        )
     )
 
 
@@ -415,31 +417,8 @@ def _neighbor_contribution_bins(
     return bins
 
 
-def _sample_colorscale_color(colorscale, weight: float, opacity: float = 0.78) -> str:
-    weight = min(1.0, max(0.0, float(weight)))
-    colors = px.colors.sample_colorscale(colorscale, [weight], colortype="rgb")
-    rgb = colors[0].removeprefix("rgb(").removesuffix(")")
-    return f"rgba({rgb}, {opacity:.3f})"
-
-
-def _append_closed_polygon(
-        groups: dict[str, dict[str, list]],
-        *,
-        key: str,
-        polygon: NDArray[np.float64],
-        hover_text: str,
-) -> None:
-    group = groups.setdefault(key, {"x": [], "y": [], "text": []})
-    closed_polygon = np.vstack([polygon, polygon[0]])
-    group["x"].extend(closed_polygon[:, 0].tolist())
-    group["x"].append(None)
-    group["y"].extend(closed_polygon[:, 1].tolist())
-    group["y"].append(None)
-    group["text"].extend([hover_text] * len(closed_polygon))
-    group["text"].append(None)
-
-
-def _voronoi_cell_traces_2d(
+def _draw_voronoi_cells_2d(
+        ax,
         points: NDArray[np.float64],
         *,
         padding_distance: float,
@@ -448,10 +427,10 @@ def _voronoi_cell_traces_2d(
         selected_site: int | None = None,
         selected_neighbor_spins: NDArray[np.int_] | None = None,
         selected_contributions: NDArray[np.float64] | None = None,
-) -> list[go.Scatter]:
+) -> int:
     points = np.asarray(points, dtype=float)
     if points.shape[0] < 3:
-        return []
+        return 0
 
     mins = points.min(axis=0)
     maxs = points.max(axis=0)
@@ -467,7 +446,7 @@ def _voronoi_cell_traces_2d(
             radius=max_span * 4.0 + padding_distance,
         )
     except sci.spatial.QhullError:
-        return []
+        return 0
 
     contribution_by_neighbor = _neighbor_contribution_bins(
         (
@@ -482,8 +461,8 @@ def _voronoi_cell_traces_2d(
         ),
     )
 
-    groups: dict[str, dict[str, list]] = {}
-    group_style: dict[str, tuple[str, str]] = {}
+    seen_labels: set[str] = set()
+    patches_added = 0
     for site_index, region in enumerate(regions):
         polygon = _clip_polygon_to_box(
             vertices[region],
@@ -496,66 +475,43 @@ def _voronoi_cell_traces_2d(
             continue
 
         if selected_site is not None and site_index == int(selected_site):
-            fillcolor = "rgba(213, 94, 0, 0.40)"
+            facecolor = "#d55e00"
+            alpha = 0.40
             name = "selected voronoi cell"
-            hover_text = f"selected site: {site_index}"
         elif site_index in contribution_by_neighbor:
             contribution_bin, contribution = contribution_by_neighbor[site_index]
-            fillcolor = _sample_colorscale_color(
-                px.colors.sequential.Cividis,
-                contribution_bin / 6.0,
-            )
+            facecolor = plt.colormaps["cividis"](contribution_bin / 6.0)
+            alpha = 0.78
             name = "neighbor contribution cells"
-            hover_text = (
-                f"neighbor site: {site_index}<br>"
-                f"selected site: {selected_site}<br>"
-                f"correlation: {contribution:.6g}"
-            )
-            name = f"{name} {contribution_bin}"
         elif spin_labels is not None and spin_color_map is not None:
             state = str(spin_labels[site_index])
-            fillcolor = spin_color_map.get(state, "rgba(95, 102, 115, 0.18)")
-            name = f"voronoi {state}"
-            hover_text = f"site: {site_index}<br>state: {state}"
+            facecolor = spin_color_map.get(state, "#5f6673")
+            alpha = 0.35
+            name = state
         else:
-            fillcolor = "rgba(95, 102, 115, 0.12)"
+            facecolor = "#5f6673"
+            alpha = 0.12
             name = "voronoi cells"
-            hover_text = f"site: {site_index}"
-
-        group_style[name] = (fillcolor, name)
-        _append_closed_polygon(
-            groups,
-            key=name,
-            polygon=polygon,
-            hover_text=hover_text,
+        label = name if name not in seen_labels else "_nolegend_"
+        seen_labels.add(name)
+        cell = Polygon(
+            polygon,
+            closed=True,
+            facecolor=facecolor,
+            edgecolor=(0.37, 0.40, 0.45, 0.28),
+            linewidth=0.75,
+            alpha=alpha,
+            label=label,
+            zorder=0,
         )
-
-    traces: list[go.Scatter] = []
-    for key, group in groups.items():
-        fillcolor, name = group_style[key]
-        display_name = "neighbor contribution cells" if name.startswith(
-            "neighbor contribution cells"
-        ) else name
-        if display_name.startswith("voronoi ") and display_name != "voronoi cells":
-            display_name = display_name.removeprefix("voronoi ")
-        traces.append(
-            go.Scatter(
-                x=group["x"],
-                y=group["y"],
-                mode="lines",
-                fill="toself",
-                fillcolor=fillcolor,
-                line=dict(color="rgba(95, 102, 115, 0.28)", width=0.75),
-                hoverinfo="text",
-                text=group["text"],
-                name=display_name,
-                showlegend=display_name != "neighbor contribution cells"
-                or not any(
-                    trace.name == "neighbor contribution cells" for trace in traces
-                ),
-            )
-        )
-    return traces
+        if site_index in contribution_by_neighbor:
+            contribution = contribution_by_neighbor[site_index][1]
+            cell.set_gid(f"site={site_index};contribution={contribution:.12g}")
+        else:
+            cell.set_gid(f"site={site_index}")
+        ax.add_patch(cell)
+        patches_added += 1
+    return patches_added
 
 
 # =========================
@@ -655,7 +611,7 @@ def graph_euclidean_system(
         voronoi_padding_distance: float | None = None,
         plot_figure: bool = True,
 ):
-    """Plot a Euclidean grid in 1D, 2D, or 3D using the first three coordinates."""
+    """Plot a Euclidean grid in 1D, 2D, or 3D with Matplotlib."""
     pts = np.asarray(grid_points, dtype=float)
     if pts.ndim != 2:
         raise ValueError("grid_points must be a 2D array.")
@@ -674,27 +630,27 @@ def graph_euclidean_system(
         labels = np.empty(spins.shape[0], dtype=object)
         labels[spins] = "A"
         labels[~spins] = "B"
-        color_map = {"A": "yellow", "B": "blue"}
+        color_map = {"A": "#f0c808", "B": "#1f77b4"}
 
     if pts.shape[1] == 1:
+        fig, ax = plt.subplots()
         state_value = np.zeros(pts.shape[0]) if spins is None else spins.astype(int)
-        data = pd.DataFrame(
-            {"x": pts[:, 0], "state_value": state_value, "state": labels}
-        )
-        fig = px.scatter(
-            data,
-            x="x",
-            y="state_value",
-            color="state",
-            color_discrete_map=color_map,
-            title=fig_title,
-        )
-        fig.update_yaxes(visible=False)
+        for state in sorted(np.unique(labels)):
+            mask = labels == state
+            ax.scatter(
+                pts[mask, 0],
+                state_value[mask],
+                color=color_map.get(state, "#5f6673"),
+                s=20,
+                label=str(state),
+            )
+        ax.get_yaxis().set_visible(False)
+        ax.set_xlabel("x")
     elif pts.shape[1] == 2:
-        data = pd.DataFrame({"x": pts[:, 0], "y": pts[:, 1], "state": labels})
-        fig = go.Figure()
+        fig, ax = plt.subplots()
         if voronoi_padding_distance is not None:
-            for trace in _voronoi_cell_traces_2d(
+            _draw_voronoi_cells_2d(
+                ax,
                 pts,
                 padding_distance=voronoi_padding_distance,
                 spin_labels=labels if selected_site is None else None,
@@ -702,8 +658,7 @@ def graph_euclidean_system(
                 selected_site=selected_site,
                 selected_neighbor_spins=selected_neighbor_spins,
                 selected_contributions=selected_contributions,
-            ):
-                fig.add_trace(trace)
+            )
         if show_edges:
             edges = _infer_2d_lattice_edges(
                 pts,
@@ -711,63 +666,64 @@ def graph_euclidean_system(
                 edge_tolerance=edge_tolerance,
             )
             if edges.size:
-                fig.add_trace(_edge_trace_2d(pts, edges))
-        for state in sorted(data["state"].unique()):
-            state_data = data[data["state"] == state]
-            fig.add_trace(
-                go.Scatter(
-                    x=state_data["x"],
-                    y=state_data["y"],
-                    mode="markers",
-                    name=str(state),
-                    marker=dict(
-                        color=color_map.get(state, "#5f6673"),
-                        size=8,
-                        line=dict(width=0),
-                    ),
-                )
+                _draw_edges_2d(ax, pts, edges)
+        for state in sorted(np.unique(labels)):
+            mask = labels == state
+            ax.scatter(
+                pts[mask, 0],
+                pts[mask, 1],
+                color=color_map.get(state, "#5f6673"),
+                s=18,
+                edgecolors="none",
+                label=str(state),
+                zorder=2,
             )
         if selected_site is not None:
             selected_point = pts[int(selected_site)]
-            fig.add_trace(
-                go.Scatter(
-                    x=[selected_point[0]],
-                    y=[selected_point[1]],
-                    mode="markers",
-                    marker=dict(
-                        color="#d55e00",
-                        size=15,
-                        symbol="star",
-                        line=dict(color="black", width=1.5),
-                    ),
-                    text=[f"selected site: {int(selected_site)}"],
-                    hoverinfo="text",
-                    name="selected site",
-                )
+            ax.scatter(
+                [selected_point[0]],
+                [selected_point[1]],
+                color="#d55e00",
+                s=120,
+                marker="*",
+                edgecolors="black",
+                linewidths=1.0,
+                label="selected site",
+                zorder=3,
             )
-        fig.update_layout(title=fig_title)
-        fig.update_yaxes(scaleanchor="x", scaleratio=1)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
     else:
-        data = pd.DataFrame(
-            {"x": pts[:, 0], "y": pts[:, 1], "z": pts[:, 2], "state": labels}
-        )
-        fig = px.scatter_3d(
-            data,
-            x="x",
-            y="y",
-            z="z",
-            color="state",
-            color_discrete_map=color_map,
-            title=fig_title,
-        )
-        fig.update_layout(scene=dict(aspectmode="data"))
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection="3d")
+        for state in sorted(np.unique(labels)):
+            mask = labels == state
+            ax.scatter(
+                pts[mask, 0],
+                pts[mask, 1],
+                pts[mask, 2],
+                color=color_map.get(state, "#5f6673"),
+                s=12,
+                depthshade=False,
+                label=str(state),
+            )
+        data_span = np.ptp(pts[:, :3], axis=0)
+        ax.set_box_aspect(np.where(data_span > 0, data_span, 1.0))
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
 
-    fig.update_traces(marker=dict(size=4, line=dict(width=0)), selector=dict(mode="markers"))
-    fig.update_layout(template="plotly_white", margin=dict(l=0, r=0, t=60, b=0))
+    ax.set_title(fig_title)
+    handles, legend_labels = ax.get_legend_handles_labels()
+    if handles:
+        unique = dict(zip(legend_labels, handles))
+        ax.legend(unique.values(), unique.keys())
+    fig.tight_layout()
     if plot_figure:
-        fig.show()
-    else:
-        return fig
+        plt.show()
+        return None
+    return fig
 
 
 # =========================
@@ -792,8 +748,8 @@ def plot_spin_system(
         plot_figure: bool = True,
 ):
     """
-    Dispatcher for inverse, independent, non-antipodal, and Euclidean systems:
-      - 'INVERSE'       → single spin, antipodal
+    Dispatcher for complementary, independent, non-antipodal, and Euclidean systems:
+      - 'COMPLEMENTARY'       → single spin, antipodal
       - 'INDEPENDENT'   → two spins [A,B], antipodal
       - 'NONANTIPODAL'  → single spin, no antipodal
     """

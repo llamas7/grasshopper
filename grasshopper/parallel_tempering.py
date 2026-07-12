@@ -38,7 +38,7 @@ class _SharedCSRSpec:
     indptr: _SharedArraySpec
     neighbor_spins: _SharedArraySpec
     contributions: _SharedArraySpec
-    spin_potential: _SharedArraySpec
+    total_weight: _SharedArraySpec
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,7 @@ def _share_csr_neighborhood(
             neighborhood.indptr,
             neighborhood.neighbor_spins,
             neighborhood.contributions,
-            neighborhood.spin_potential,
+            neighborhood.total_weight,
     ):
         spec, handle = _share_array(array)
         specs.append(spec)
@@ -122,7 +122,7 @@ def _share_csr_neighborhood(
             indptr=specs[0],
             neighbor_spins=specs[1],
             contributions=specs[2],
-            spin_potential=specs[3],
+            total_weight=specs[3],
         ),
         handles,
     )
@@ -149,17 +149,17 @@ def _attach_worker_neighborhood(
     contributions, contributions_shm = _attach_shared_array(
         neighborhood_context.contributions
     )
-    spin_potential, spin_potential_shm = _attach_shared_array(
-        neighborhood_context.spin_potential
+    total_weight, total_weight_shm = _attach_shared_array(
+        neighborhood_context.total_weight
     )
     return (
         NonAntipodalNeighborhoodCSR(
             indptr=indptr,
             neighbor_spins=neighbor_spins,
             contributions=contributions,
-            spin_potential=spin_potential,
+            total_weight=total_weight,
         ),
-        [indptr_shm, neighbor_spins_shm, contributions_shm, spin_potential_shm],
+        [indptr_shm, neighbor_spins_shm, contributions_shm, total_weight_shm],
     )
 
 

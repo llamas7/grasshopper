@@ -289,7 +289,7 @@ def build_antipodal_neighborhood(
                 positive_contributions=positive_contributions,
                 negative_spins=np.array(second_half[negative_bool] - num_spins),
                 negative_contributions=negative_contributions,
-                spin_potential=total_positive + total_negative,
+                total_weight=total_positive + total_negative,
             )
         )
     return neighborhood
@@ -331,7 +331,7 @@ def build_nonantipodal_neighborhood(
         distances = validate_distances(
             resolved_metric.distance_fn(grid_points[pruned_spins], grid_points[i])
         )
-        contributions, contributing_mask, spin_potential = _weighted_contributions(
+        contributions, contributing_mask, total_weight = _weighted_contributions(
             distances,
             shell_distances,
             shell_weights,
@@ -342,7 +342,7 @@ def build_nonantipodal_neighborhood(
             NonAntipodalNeighborhood(
                 neighbor_spins=pruned_spins[contributing_mask],
                 contributions=contributions,
-                spin_potential=spin_potential,
+                total_weight=total_weight,
             )
         )
 

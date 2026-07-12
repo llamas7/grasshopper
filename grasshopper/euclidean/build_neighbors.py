@@ -227,7 +227,7 @@ def build_euclidean_neighborhood(
                 NonAntipodalNeighborhood(
                     neighbor_spins=np.array([], dtype=np.int64),
                     contributions=np.array([], dtype=np.float64),
-                    spin_potential=0.0,
+                    total_weight=0.0,
                 )
             )
             continue
@@ -235,14 +235,14 @@ def build_euclidean_neighborhood(
         distances = validate_distances(
             resolved_metric.distance_fn(grid_points[pruned_spins], grid_points[i])
         )
-        contributions, contributing_mask, spin_potential = calculate_contributions(
+        contributions, contributing_mask, total_weight = calculate_contributions(
             jump_distance, cell_length, distances, discrete_function
         )
         neighborhood.append(
             NonAntipodalNeighborhood(
                 neighbor_spins=pruned_spins[contributing_mask],
                 contributions=contributions,
-                spin_potential=spin_potential,
+                total_weight=total_weight,
             )
         )
 

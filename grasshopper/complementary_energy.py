@@ -41,14 +41,14 @@ def calculate_spin_delta_energy(
     aligned_contributions = neighbors.positive_contributions
     non_aligned_spins = neighbors.negative_spins
     non_aligned_contributions = neighbors.negative_contributions
-    spin_potential = neighbors.spin_potential
+    total_weight = neighbors.total_weight
     current_energy += np.dot(
         spin_state == system_states[aligned_spins], aligned_contributions
     )
     current_energy += np.dot(
         spin_state != system_states[non_aligned_spins], non_aligned_contributions
     )
-    return spin_potential - 2 * current_energy
+    return total_weight - 2 * current_energy
 
 
 def generate_energy_grid(

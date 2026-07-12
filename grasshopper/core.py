@@ -40,7 +40,7 @@ class Neighborhood:
     positive_contributions: NDArray[np.float64]
     negative_spins: NDArray[np.int_]
     negative_contributions: NDArray[np.float64]
-    spin_potential: float
+    total_weight: float
 
     def __post_init__(self) -> None:
         positive_spins, positive_contributions = _normalize_sparse_row(
@@ -59,14 +59,14 @@ class Neighborhood:
         object.__setattr__(self, "positive_contributions", positive_contributions)
         object.__setattr__(self, "negative_spins", negative_spins)
         object.__setattr__(self, "negative_contributions", negative_contributions)
-        object.__setattr__(self, "spin_potential", float(self.spin_potential))
+        object.__setattr__(self, "total_weight", float(self.total_weight))
 
 
 @dataclass(frozen=True)
 class NonAntipodalNeighborhood:
     neighbor_spins: NDArray[np.int_]
     contributions: NDArray[np.float64]
-    spin_potential: float
+    total_weight: float
 
     def __post_init__(self) -> None:
         neighbor_spins, contributions = _normalize_sparse_row(
@@ -77,7 +77,7 @@ class NonAntipodalNeighborhood:
         )
         object.__setattr__(self, "neighbor_spins", neighbor_spins)
         object.__setattr__(self, "contributions", contributions)
-        object.__setattr__(self, "spin_potential", float(self.spin_potential))
+        object.__setattr__(self, "total_weight", float(self.total_weight))
 
     def __len__(self) -> int:
         return int(self.neighbor_spins.size)
@@ -94,7 +94,7 @@ class NonAntipodalNeighborhoodCSR:
     indptr: NDArray[np.int64]
     neighbor_spins: NDArray[np.int64]
     contributions: NDArray[np.float64]
-    spin_potential: NDArray[np.float64]
+    total_weight: NDArray[np.float64]
 
     @classmethod
     def from_rows(
@@ -127,15 +127,15 @@ class NonAntipodalNeighborhoodCSR:
             contributions = np.concatenate(contribution_rows).astype(
                 np.float64, copy=False
             )
-        spin_potential = np.asarray(
-            [row.spin_potential for row in rows],
+        total_weight = np.asarray(
+            [row.total_weight for row in rows],
             dtype=np.float64,
         )
         return cls(
             indptr=indptr,
             neighbor_spins=np.ascontiguousarray(neighbor_spins),
             contributions=np.ascontiguousarray(contributions),
-            spin_potential=np.ascontiguousarray(spin_potential),
+            total_weight=np.ascontiguousarray(total_weight),
         )
 
     def __len__(self) -> int:
@@ -154,7 +154,7 @@ class NonAntipodalNeighborhoodCSR:
         return NonAntipodalNeighborhood(
             neighbor_spins=self.neighbor_spins[start:stop],
             contributions=self.contributions[start:stop],
-            spin_potential=float(self.spin_potential[index]),
+            total_weight=float(self.total_weight[index]),
         )
 
 
@@ -560,7 +560,7 @@ class ConstraintModel(str, Enum):
 
 
 class InteractionModel(str, Enum):
-    INVERSE = "inverse"
+    COMPLEMENTARY = "complementary"
     INDEPENDENT = "independent"
     OCCUPANCY = "occupancy"
 
@@ -668,7 +668,7 @@ class SystemConfig:
             (
                 Geometry.SPHERICAL,
                 ConstraintModel.ANTIPODAL,
-                InteractionModel.INVERSE,
+                InteractionModel.COMPLEMENTARY,
                 UpdateRule.FLIP,
             ),
             (
@@ -713,11 +713,11 @@ class SystemConfig:
         )
 
     @classmethod
-    def inverse(cls) -> "SystemConfig":
+    def complementary(cls) -> "SystemConfig":
         return cls(
             geometry=Geometry.SPHERICAL,
             constraint=ConstraintModel.ANTIPODAL,
-            interaction_model=InteractionModel.INVERSE,
+            interaction_model=InteractionModel.COMPLEMENTARY,
             update_rule=UpdateRule.FLIP,
         )
 

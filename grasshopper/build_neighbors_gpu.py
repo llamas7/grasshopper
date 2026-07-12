@@ -301,7 +301,7 @@ def build_antipodal_neighborhood_gpu(
                     positive_contributions=positive_values_cpu[local_idx],
                     negative_spins=negative_indices_cpu[local_idx],
                     negative_contributions=negative_values_cpu[local_idx],
-                    spin_potential=float(
+                    total_weight=float(
                         positive_sums_cpu[local_idx] + negative_sums_cpu[local_idx]
                     ),
                 )
@@ -364,7 +364,7 @@ def build_nonantipodal_neighborhood_gpu(
                 NonAntipodalNeighborhood(
                     neighbor_spins=neighbor_indices_cpu[local_idx],
                     contributions=contribution_values_cpu[local_idx],
-                    spin_potential=float(spin_sums_cpu[local_idx]),
+                    total_weight=float(spin_sums_cpu[local_idx]),
                 )
             )
 

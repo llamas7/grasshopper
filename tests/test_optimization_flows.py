@@ -28,8 +28,8 @@ class OptimizationFlowTests(unittest.TestCase):
     def setUp(self) -> None:
         np.random.seed(12345)
 
-    def make_inverse_system(self) -> gh.System:
-        system = gh.System.inverse(spherical_grid())
+    def make_complementary_system(self) -> gh.System:
+        system = gh.System.complementary(spherical_grid())
         system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         system.array_init(np.array([True, False, True], dtype=bool))
         return system
@@ -64,7 +64,7 @@ class OptimizationFlowTests(unittest.TestCase):
         return system
 
     def test_thermalize_updates_runtime_temperature(self) -> None:
-        system = self.make_inverse_system()
+        system = self.make_complementary_system()
         system.temperature = 1.0
 
         with mock.patch("grasshopper.annealing.metropolis_sweep", return_value=0.0):
@@ -79,7 +79,7 @@ class OptimizationFlowTests(unittest.TestCase):
         self.assertEqual(system.temperature, final_temperature)
 
     def test_thermalize_seed_does_not_consume_global_rng(self) -> None:
-        system = self.make_inverse_system()
+        system = self.make_complementary_system()
         np.random.seed(999)
         expected_next = np.random.random()
         np.random.seed(999)
@@ -95,8 +95,8 @@ class OptimizationFlowTests(unittest.TestCase):
 
         self.assertEqual(np.random.random(), expected_next)
 
-    def test_metropolis_sweep_uses_spinflip_numba_hook_for_inverse(self) -> None:
-        system = self.make_inverse_system()
+    def test_metropolis_sweep_uses_spinflip_numba_hook_for_complementary(self) -> None:
+        system = self.make_complementary_system()
         engine = get_engine(system.config)
         energy_array = engine.grid_gen(system.current_system, system.neighborhood)
 
@@ -120,7 +120,7 @@ class OptimizationFlowTests(unittest.TestCase):
         accelerated.assert_called_once()
 
     def test_anneal_appends_record_and_keeps_exact_energy(self) -> None:
-        system = self.make_inverse_system()
+        system = self.make_complementary_system()
 
         system.anneal(
             starting_temp=1.0,
@@ -137,7 +137,7 @@ class OptimizationFlowTests(unittest.TestCase):
         self.assertEqual(system.temperature, 0.5)
 
     def test_anneal_seed_does_not_consume_global_rng(self) -> None:
-        system = self.make_inverse_system()
+        system = self.make_complementary_system()
         np.random.seed(777)
         expected_next = np.random.random()
         np.random.seed(777)
@@ -155,7 +155,7 @@ class OptimizationFlowTests(unittest.TestCase):
 
     def test_greedy_runs_for_all_supported_engines(self) -> None:
         systems = [
-            self.make_inverse_system(),
+            self.make_complementary_system(),
             self.make_independent_system(),
             self.make_non_antipodal_system(),
             self.make_euclidean_system(),
@@ -172,7 +172,7 @@ class OptimizationFlowTests(unittest.TestCase):
                 assert_fixed_density_consistent(self, system)
 
     def test_greedy_reinit_only_recomputes_at_start_and_end(self) -> None:
-        system = self.make_inverse_system()
+        system = self.make_complementary_system()
 
         with mock.patch(
             "grasshopper.greedy._recompute_energy_state",
@@ -183,7 +183,7 @@ class OptimizationFlowTests(unittest.TestCase):
         self.assertEqual(recompute.call_count, 2)
 
     def test_greedy_default_reinit_is_false(self) -> None:
-        system = self.make_inverse_system()
+        system = self.make_complementary_system()
 
         with mock.patch(
             "grasshopper.greedy._recompute_energy_state",

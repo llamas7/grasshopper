@@ -2,7 +2,7 @@ from __future__ import annotations
 from numpy.typing import NDArray
 import numpy as np
 from .core import ConstraintModel, Engine, InteractionModel, SystemConfig, UpdateRule
-from .inverse_energy import (
+from .complementary_energy import (
     generate_energy_grid,
     update_energy_grid,
     calculate_system_energy,
@@ -24,13 +24,13 @@ if TYPE_CHECKING:
     from .system import System
 
 
-def inv_suggest(system: System, energy_array: NDArray[np.float64]):
+def complementary_suggest(system: System, energy_array: NDArray[np.float64]):
     suggested_update = np.random.randint(system.num_spins)
     energy_delta = energy_array[suggested_update]
     return suggested_update, energy_delta
 
 
-def inv_best_update(system: System, energy_array: NDArray[np.float64]):
+def complementary_best_update(system: System, energy_array: NDArray[np.float64]):
     if energy_array.size == 0:
         return None, float("-inf")
     suggested_update = int(np.argmax(energy_array))
@@ -100,13 +100,13 @@ def na_best_update(system: System, energy_array: NDArray[np.float64]):
     return suggested_update, float(energy_delta)
 
 
-INVERSE_ENGINE = Engine(
-    mode="inverse",
+COMPLEMENTARY_ENGINE = Engine(
+    mode="complementary",
     energy=calculate_system_energy,
     grid_gen=generate_energy_grid,
     update=update_energy_grid,
-    suggest=inv_suggest,
-    best_update=inv_best_update,
+    suggest=complementary_suggest,
+    best_update=complementary_best_update,
 )
 INDEPENDENT_ENGINE = Engine(
     mode="independent",
@@ -137,9 +137,9 @@ NONANTIPODAL_ENGINE = Engine(
 ENGINE_BY_CONFIG_KEY = {
     (
         ConstraintModel.ANTIPODAL,
-        InteractionModel.INVERSE,
+        InteractionModel.COMPLEMENTARY,
         UpdateRule.FLIP,
-    ): INVERSE_ENGINE,
+    ): COMPLEMENTARY_ENGINE,
     (
         ConstraintModel.INDEPENDENT,
         InteractionModel.INDEPENDENT,

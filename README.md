@@ -4,7 +4,7 @@
 
 It includes:
 
-- spherical inverse systems
+- spherical complementary systems
 - spherical independent systems
 - spherical fixed-density non-antipodal systems
 - Euclidean fixed-density systems
@@ -46,7 +46,8 @@ If a newly opened Codex conversation still does not resolve `python`, restart th
 - [`tests/`](tests/) - `unittest` suite
 - [`examples/collect_gaussian.py`](examples/collect_gaussian.py) - adaptive
   Gaussian phase-transition scan
-- [`parallel_tempering_square_lattice_demo.py`](parallel_tempering_square_lattice_demo.py) - runnable lattice demonstration
+- [`examples/parallel_tempering.py`](examples/parallel_tempering.py) -
+  runnable replica-exchange demonstration
 - [`pyproject.toml`](pyproject.toml) - build metadata
 
 ## Quick start
@@ -80,7 +81,7 @@ Setup methods can be chained:
 
 ```python
 system = (
-    gh.System.inverse(grid)
+    gh.System.complementary(grid)
     .compute_neighborhood(jump_distance=np.pi / 2)
     .random_init(seed=123)
 )
@@ -94,7 +95,7 @@ metadata, and whether the system is ready for optimization.
 The recommended entrypoints are:
 
 ```python
-system = gh.System.inverse(grid)
+system = gh.System.complementary(grid)
 system = gh.System.independent(grid)
 system = gh.System.non_antipodal(grid)
 system = gh.System.euclidean(grid, num_spins=1000)
@@ -112,7 +113,7 @@ system = gh.System(grid, config=gh.SystemConfig.non_antipodal())
 
 | Family | Constructor | Geometry | Constraint | Update rule |
 | --- | --- | --- | --- | --- |
-| Inverse | `System.inverse(grid)` | Spherical | Antipodal | Flip |
+| Complementary | `System.complementary(grid)` | Spherical | Antipodal | Flip |
 | Independent | `System.independent(grid)` | Spherical | Independent | Flip |
 | Non-antipodal | `System.non_antipodal(grid)` | Spherical | Fixed-density | Swap |
 | Euclidean | `System.euclidean(grid, num_spins=...)` | Euclidean | Fixed-density | Swap |
@@ -368,11 +369,11 @@ if __name__ == "__main__":
 
 In notebooks, `n_workers=1` is the safest default.
 
-A complete square-lattice demonstration using `jump_distance=0.60` is available
-as a runnable script:
+A complete square-lattice replica-exchange demonstration is available as a
+runnable script:
 
 ```bash
-python parallel_tempering_square_lattice_demo.py
+python examples/parallel_tempering.py
 ```
 
 ### Adaptive Gaussian transition scans
@@ -431,8 +432,9 @@ configuration, then call `load(...)`. Rebuild the neighborhood afterward if
 you want to continue optimizing. For saved states that used built-in kernels
 and distance metrics, `compute_neighborhood()` reuses the loaded metadata when
 you omit those arguments. If the original kernel, metric, or shell measure was
-a custom callable, pass it again while rebuilding. Format `4.0` is written and
-read.
+a custom callable, pass it again while rebuilding. Format `5.0` is written;
+format `4.0` checkpoints are also read and their complementary-model metadata
+is migrated during loading.
 
 Built-in metadata can be rebuilt automatically:
 
@@ -452,7 +454,7 @@ with the custom callable in that case.
 
 ```python
 system = (
-    gh.System.inverse(grid)
+    gh.System.complementary(grid)
     .compute_neighborhood(jump_distance=np.pi / 2)
     .hemisphere_init(seed=123)
 )
@@ -530,7 +532,43 @@ system.random_init(seed=123)
 system.plot(plot_current=True, show_edges=True)
 ```
 
-These rely on `plotly`, `matplotlib`, `pandas`, and `scipy`.
+Euclidean system plots use Matplotlib and return a Matplotlib `Figure` when
+`plot_figure=False`. Spherical plots remain interactive Plotly figures.
+Voronoi construction and neighborhood diagnostics also rely on SciPy.
+
+## Examples
+
+The introductory examples are short Python scripts that run from the
+repository root:
+
+```bash
+python examples/spherical_complementary.py
+python examples/spherical_independent.py
+python examples/spherical_non_antipodal.py
+python examples/euclidean_2d.py
+python examples/euclidean_3d.py
+python examples/gaussian_kernel.py
+python examples/parallel_tempering.py
+```
+
+The spherical examples generate small antipodally paired Fibonacci grids and
+write interactive Plotly HTML files. The Euclidean examples write Matplotlib
+PNG files. Outputs are placed in a script-specific directory below
+`examples/output/`.
+
+Each script accepts `--help`. Common optimization controls include `--steps`,
+`--anneal-iterations`, `--greedy-steps`, and `--seed`. Increase the grid size
+and these optimization limits for serious numerical searches; the defaults
+are intentionally small demonstrations and should not be interpreted as
+globally optimized lawns. Use `--show` to display the generated figure in
+addition to saving it.
+
+The Gaussian example compares the compact cosine delta regularization with
+`KernelSpec.gaussian(...)` from the same initial lawn. The parallel-tempering
+example additionally reports its temperature ladder and replica-exchange
+rates. The larger `collect_gaussian.py` and
+`collect_gaussian_figure_data.py` programs are research data-collection tools
+rather than introductory examples.
 
 ## Testing
 

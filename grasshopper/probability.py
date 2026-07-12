@@ -282,9 +282,9 @@ def graph_probability(
 
     neighborhood = system.neighborhood
     if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
-        available_weight = float(np.sum(neighborhood.spin_potential[spins]))
+        available_weight = float(np.sum(neighborhood.total_weight[spins]))
     elif isinstance(neighborhood, list):
-        available_weight = float(sum(row.spin_potential for row in neighborhood))
+        available_weight = float(sum(row.total_weight for row in neighborhood))
     else:
         raise RuntimeError("Neighborhood has not been built.")
     if available_weight <= 0:

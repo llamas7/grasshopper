@@ -19,8 +19,16 @@
 
 # Keep library examples, but not generated example output.
 !examples/
+!examples/_common.py
 !examples/collect_gaussian.py
-!examples/parallel_tempering_square_lattice_demo.py
+!examples/collect_gaussian_figure_data.py
+!examples/euclidean_2d.py
+!examples/euclidean_3d.py
+!examples/gaussian_kernel.py
+!examples/parallel_tempering.py
+!examples/spherical_complementary.py
+!examples/spherical_independent.py
+!examples/spherical_non_antipodal.py
 
 # Ignore generated/cache files even inside unignored directories.
 __pycache__/
