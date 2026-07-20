@@ -30,16 +30,6 @@ pip install -r requirements.txt
 
 Optional GPU neighborhood helpers require a CUDA-matched CuPy build. The default library path is CPU-based.
 
-## Codex Runtime
-
-This repository includes a repo-local Python runtime at `.codex-python/` for Codex desktop sessions. Inside this project, the intended test command is:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-If a newly opened Codex conversation still does not resolve `python`, restart the Codex app so it picks up the updated user `PATH`.
-
 ## Package layout
 
 - [`grasshopper/`](grasshopper/) - installable library package
@@ -391,8 +381,28 @@ python examples/collect_gaussian.py transitions \
 
 It resumes compatible records in the output directory automatically. Use
 `--uniform` for the original fixed-step eta grid, or `--overwrite` to restart
-only the matching scan. Adaptive progress and selection reasons are written to
-`adaptive_scan.json`.
+only the matching scan. By default, the first unambiguous bracket between a
+nonrotational and rotational morphology suspends all higher initial anchors.
+The scheduler then bisects that bracket to locate the restoration threshold.
+Use `--continue-after-restoration` to continue toward `--eta-max`, for example
+when searching for a later disk-to-annulus transition. Adaptive progress, the
+current restoration bracket, any persistence check, and selection reasons are
+written to `adaptive_scan.json`.
+
+Completed transition scans can be combined into an updated lawn-morphology
+sequence and a preliminary \((d,\sigma/d)\) diagnostic diagram with:
+
+```bash
+python examples/plot_gaussian_morphology_diagram.py \
+    --input-dir Gauss_data/transitions \
+    --output-dir Gauss_data/morphology_diagram
+```
+
+The morphology sequence uses the best stored states at selected widths. The
+diagnostic diagram shows only sampled points, marks run-to-run label
+disagreement, and distinguishes resolved rotational-restoration brackets from
+incomplete ones rather than interpolating regions that have not been
+calculated.
 
 ## Histories
 

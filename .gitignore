@@ -22,6 +22,7 @@
 !examples/_common.py
 !examples/collect_gaussian.py
 !examples/collect_gaussian_figure_data.py
+!examples/plot_gaussian_morphology_diagram.py
 !examples/euclidean_2d.py
 !examples/euclidean_3d.py
 !examples/gaussian_kernel.py
