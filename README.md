@@ -1,5 +1,20 @@
 # grasshopper
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21462699.svg)](https://doi.org/10.5281/zenodo.21462699)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**Software citation:** David Llamas (2026), *llamas7/grasshopper: grasshopper - initial release*, v1.0.0, Zenodo. [https://doi.org/10.5281/zenodo.21462699](https://doi.org/10.5281/zenodo.21462699)
+
+**Related publications:**
+
+- David Llamas, Jaron Kent-Dobias, Kun Chen, Adrian Kent, and Olga Goulko, "Origin of Symmetry Breaking in the Grasshopper Model," *Physical Review Research* **6**, 023235 (2024). [https://doi.org/10.1103/PhysRevResearch.6.023235](https://doi.org/10.1103/PhysRevResearch.6.023235)
+- David Llamas, Dmitry Chistikov, Adrian Kent, Mike Paterson, and Olga Goulko, "Optimal Local Simulations of a Quantum Singlet" (2025). [https://doi.org/10.48550/arXiv.2504.20953](https://doi.org/10.48550/arXiv.2504.20953)
+- David Llamas, Dmitry Chistikov, Adrian Kent, Mike Paterson, and Olga Goulko, "The Grasshopper Problem on the Sphere" (2026). [https://doi.org/10.48550/arXiv.2603.08579](https://doi.org/10.48550/arXiv.2603.08579)
+
+**Funding:** This work was supported by the National Science Foundation under Grant Nos. PHY-2112738 ("CQIS: The Grasshopper Problem") and OSI-2328774 ("ExpandQISE: Track 2: EQUIP-UMB"). David Llamas also acknowledges support from the College of Science and Mathematics Dean's Doctoral Research Fellowship, made possible through fellowship support from Oracle under project ID R0000000025727.
+
+**License:** This software is distributed under the [MIT License](LICENSE).
+
 `grasshopper` is a Python library for sparse spin-system optimization on spherical and Euclidean grids.
 
 It includes:

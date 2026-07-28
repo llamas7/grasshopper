@@ -8,6 +8,7 @@
 !README.md
 !pyproject.toml
 !requirements.txt
+!LICENSE
 
 # Keep the library package.
 !grasshopper/
