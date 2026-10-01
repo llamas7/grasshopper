@@ -28,6 +28,7 @@ from .core import (
 )
 from .greedy import GreedyResult
 from .lattices import (
+    fibonacci_lattice,
     hexagonal_lattice,
     honeycomb_lattice,
     rectangular_lattice,
@@ -46,6 +47,7 @@ __all__ = [
     "AnnealSchedule",
     "ConstraintModel",
     "DistanceMetric",
+    "fibonacci_lattice",
     "Geometry",
     "GreedyHistory",
     "GreedyRecord",

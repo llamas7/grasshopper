@@ -63,6 +63,47 @@ class OptimizationFlowTests(unittest.TestCase):
         system.array_init(np.array([True, False, True, False], dtype=bool))
         return system
 
+    def test_clone_shares_geometry_but_isolates_spins_and_histories(self) -> None:
+        system = self.make_euclidean_system()
+        system.greedy(reinit=False)
+        clone = system.clone()
+
+        self.assertIs(clone.grid, system.grid)
+        self.assertIs(clone.neighborhood, system.neighborhood)
+        self.assertEqual(clone.state_summary(), system.state_summary())
+        for name in ("current_system", "best_system"):
+            np.testing.assert_array_equal(getattr(clone, name), getattr(system, name))
+            self.assertFalse(np.shares_memory(getattr(clone, name), getattr(system, name)))
+        for name in ("occupied", "unoccupied"):
+            self.assertFalse(np.shares_memory(
+                getattr(clone.occupancy, name), getattr(system.occupancy, name)
+            ))
+        for name in ("anneal_data", "greedy_history", "parallel_tempering_history"):
+            self.assertEqual(getattr(clone, name), getattr(system, name))
+            self.assertIsNot(getattr(clone, name).records, getattr(system, name).records)
+
+        clone.greedy_history.records.clear()
+        self.assertTrue(system.greedy_history.records)
+        clone.compute_neighborhood(jump_distance=0.8, silent=True)
+        self.assertEqual(system.jump_distance, 1.0)
+        self.assertEqual(clone.jump_distance, 0.8)
+
+    def test_snapshot_restore_is_detached_and_restores_physical_state(self) -> None:
+        system = self.make_euclidean_system()
+        state = system.snapshot_state()
+        original_spins = state.current_system.copy()
+        system.array_init(~original_spins)
+        np.testing.assert_array_equal(state.current_system, original_spins)
+
+        system.restore_state(state)
+        np.testing.assert_array_equal(system.current_system, original_spins)
+        self.assertAlmostEqual(system.current_energy, exact_energy(system))
+        assert_fixed_density_consistent(self, system)
+        state.current_system[:] = False
+        state.occupancy.occupied[:] = -1
+        np.testing.assert_array_equal(system.current_system, original_spins)
+        assert_fixed_density_consistent(self, system)
+
     def test_thermalize_updates_runtime_temperature(self) -> None:
         system = self.make_complementary_system()
         system.temperature = 1.0
@@ -246,6 +287,10 @@ class OptimizationFlowTests(unittest.TestCase):
         self.assertTrue(np.array_equal(system.best_system, loaded.best_system))
         self.assertEqual(system.current_energy, loaded.current_energy)
         self.assertEqual(system.best_energy, loaded.best_energy)
+        self.assertAlmostEqual(
+            system.current_probability, loaded.current_probability
+        )
+        self.assertAlmostEqual(system.best_probability, loaded.best_probability)
         self.assertEqual(loaded.temperature, 3.5)
         self.assertIsNone(loaded.neighborhood)
         self.assertEqual(loaded.greedy_history.runs, 1)

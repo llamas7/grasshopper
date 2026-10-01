@@ -4,6 +4,7 @@ from dataclasses import FrozenInstanceError
 import unittest
 
 import numpy as np
+import xarray as xr
 from scipy.integrate import quad
 
 import grasshopper as gh
@@ -381,6 +382,99 @@ class ProbabilityTests(unittest.TestCase):
             gh.InteractionModel.COMPLEMENTARY,
         )
         self.assertAlmostEqual(loaded.current_energy, system.current_energy)
+
+    def test_probabilities_survive_save_load_and_resave_without_neighborhood(self) -> None:
+        test_dir = make_test_dir(self.id().replace(".", "_"))
+        constructors = (
+            lambda: gh.System.complementary(spherical_grid()),
+            lambda: gh.System.independent(spherical_grid()),
+            lambda: gh.System.non_antipodal(spherical_grid()),
+            lambda: gh.System.euclidean(euclidean_grid(), num_spins=2),
+        )
+        keys = ("current_probability", "best_probability",
+                "current_graph_probability", "best_graph_probability")
+        for index, construct in enumerate(constructors):
+            with self.subTest(family=index):
+                system = construct()
+                system.compute_neighborhood(1.0, silent=True)
+                system.random_init(seed=123)
+                system.greedy(reinit=False)
+                expected = {key: getattr(system, key) for key in keys}
+                path = system.save(test_dir / f"family_{index}.nc")
+                with xr.open_dataset(path) as ds:
+                    for key, value in expected.items():
+                        self.assertAlmostEqual(ds.attrs[key], value)
+
+                loaded = construct()
+                loaded.load(path)
+                self.assertIsNone(loaded.neighborhood)
+                for key, value in expected.items():
+                    self.assertAlmostEqual(getattr(loaded, key), value)
+                self.assertAlmostEqual(loaded.probability(), expected["current_probability"])
+                self.assertAlmostEqual(loaded.probability(normalization="graph"),
+                                       expected["current_graph_probability"])
+
+                resaved = loaded.save(test_dir / f"resaved_{index}.nc")
+                with xr.open_dataset(resaved) as ds:
+                    for key, value in expected.items():
+                        self.assertAlmostEqual(ds.attrs[key], value)
+                clone = loaded.clone()
+                clone.current_energy = 0.0
+                with self.assertRaisesRegex(RuntimeError, "Neighborhood"):
+                    _ = clone.current_graph_probability
+                self.assertAlmostEqual(loaded.current_graph_probability,
+                                       expected["current_graph_probability"])
+
+                loaded.compute_neighborhood(silent=True)
+                for key, value in expected.items():
+                    self.assertAlmostEqual(getattr(loaded, key), value)
+
+    def test_save_records_why_continuum_probability_is_unavailable(self) -> None:
+        test_dir = make_test_dir(self.id().replace(".", "_"))
+        system = gh.System.euclidean(euclidean_grid(), num_spins=2)
+        system.compute_neighborhood(1.0, kernel=gh.KernelSpec.exact(), silent=True)
+        system.array_init(np.array([True, False, True, False], dtype=bool))
+        expected = system.current_graph_probability
+        path = system.save(test_dir / "exact.nc")
+        with xr.open_dataset(path) as ds:
+            self.assertNotIn("current_probability", ds.attrs)
+            self.assertIn("exact diagnostic", ds.attrs["current_probability_unavailable"])
+            self.assertAlmostEqual(ds.attrs["current_graph_probability"], expected)
+        loaded = gh.System.euclidean(euclidean_grid(), num_spins=2)
+        loaded.load(path)
+        self.assertAlmostEqual(loaded.current_graph_probability, expected)
+
+    def test_load_rejects_different_particle_count_and_malformed_spins(self) -> None:
+        test_dir = make_test_dir(self.id().replace(".", "_"))
+        system = gh.System.euclidean(euclidean_grid(), num_spins=2)
+        system.compute_neighborhood(1.0, silent=True)
+        system.random_init(seed=123)
+        path = system.save(test_dir / "state.nc")
+        different_density = gh.System.euclidean(euclidean_grid(), num_spins=1)
+        with self.assertRaisesRegex(ValueError, "expects num_spins=2"):
+            different_density.load(path)
+
+        malformed = system.to_dataset()
+        malformed["current_system"] = (("wrong_site",), [True, False, True])
+        malformed.to_netcdf(test_dir / "malformed.nc")
+        with self.assertRaisesRegex(ValueError, "current_system has shape"):
+            system.load(test_dir / "malformed.nc")
+
+    def test_older_checkpoint_without_probabilities_can_be_rebuilt(self) -> None:
+        test_dir = make_test_dir(self.id().replace(".", "_"))
+        system = gh.System.complementary(spherical_grid())
+        system.compute_neighborhood(1.0, silent=True)
+        system.random_init(seed=123)
+        ds = system.to_dataset()
+        for key in list(ds.attrs):
+            if "probability" in key:
+                del ds.attrs[key]
+        path = test_dir / "legacy.nc"
+        ds.to_netcdf(path)
+        loaded = gh.System.complementary(spherical_grid())
+        loaded.load(path, rebuild_neighborhood=True)
+        self.assertAlmostEqual(loaded.current_probability, system.current_probability)
+        self.assertAlmostEqual(loaded.current_graph_probability, system.current_graph_probability)
 
     def test_custom_shell_measure_must_be_resupplied_after_load(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))

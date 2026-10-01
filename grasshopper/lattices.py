@@ -1,5 +1,5 @@
 """
-Regular 2D lattice coordinate builders.
+2D lattice and Fibonacci disk coordinate builders.
 
 These functions return raw candidate-site coordinates. The matching
 `System.*_lattice()` constructors apply fixed-density Euclidean normalization by
@@ -115,6 +115,34 @@ def _finish_points(
     return np.ascontiguousarray(points, dtype=np.float64)
 
 
+def fibonacci_lattice(
+    num_sites: int,
+    *,
+    radius: float = 1.0 / np.sqrt(np.pi),
+    origin: Point2D | Sequence[float] = (0.0, 0.0),
+) -> NDArray[np.float64]:
+    """Return a planar Fibonacci (sunflower) disk with exactly ``num_sites``.
+
+    Points lie at equal-area radial midpoints, separated by the golden angle,
+    and are ordered from the center outward. This is an approximately uniform
+    point set, not a periodic lattice. ``origin`` is the disk center and
+    ``radius`` is its nominal outer radius; the default disk has area 1.
+    Use ``System.fibonacci_lattice()`` for occupied-area normalization.
+    """
+    if isinstance(num_sites, bool) or not isinstance(num_sites, (int, np.integer)):
+        raise TypeError("num_sites must be an integer.")
+    if num_sites <= 0:
+        raise ValueError("num_sites must be positive.")
+    radius = float(radius)
+    if not np.isfinite(radius) or radius <= 0:
+        raise ValueError("radius must be positive and finite.")
+    indices = np.arange(num_sites, dtype=np.float64)
+    radii = radius * np.sqrt((indices + 0.5) / num_sites)
+    angles = indices * (np.pi * (3.0 - np.sqrt(5.0)))
+    points = radii[:, None] * np.column_stack((np.cos(angles), np.sin(angles)))
+    return np.ascontiguousarray(points + _validate_origin(origin))
+
+
 def rectangular_lattice(
     width: int,
     height: int,
@@ -168,6 +196,33 @@ def square_lattice(
     )
 
 
+def _compact_triangular_points(count: int, *, honeycomb: bool = False) -> np.ndarray:
+    """Take the nearest sites to a patch center, with deterministic edge ties.
+
+    Honeycomb sites are selected in inversion pairs, one from each sublattice.
+    This keeps the two sublattices balanced even at an incomplete outer shell.
+    """
+    radius = int(np.ceil(np.sqrt(count)))
+    rows, cols = np.meshgrid(
+        np.arange(-radius, radius + 1),
+        np.arange(-radius, radius + 1),
+        indexing="ij",
+    )
+    x = cols + (rows % 2) / 2.0
+    if honeycomb:
+        points = np.column_stack((np.sqrt(3.0) * x.ravel(), 1.5 * rows.ravel() - 0.5))
+    else:
+        points = np.column_stack((x.ravel(), np.sqrt(3.0) / 2.0 * rows.ravel()))
+    # Round away floating-point noise between geometrically equal radii.
+    distances = np.round(np.sum(points * points, axis=1), decimals=8)
+    order = np.lexsort((points[:, 0], points[:, 1], distances))
+    points = points[order[:count]]
+    if honeycomb:
+        points = np.concatenate((points, -points))
+    points = points[np.lexsort((points[:, 0], points[:, 1]))]
+    return points - points.min(axis=0)
+
+
 def triangular_lattice(
     width: int,
     height: int,
@@ -175,9 +230,14 @@ def triangular_lattice(
     spacing: float | None = None,
     origin: Point2D | Sequence[float] = (0.0, 0.0),
     center: bool = False,
+    compact: bool = True,
 ) -> NDArray[np.float64]:
     """
-    Return row-major 2D coordinates for a triangular Bravais lattice.
+    Return a compact, nearly circular patch of a triangular Bravais lattice.
+
+    ``width * height`` sets the exact site count, not the aspect ratio.
+    Sites are ordered by row. Set ``compact=False`` for the original
+    parallelogram with ``width`` sites in each of ``height`` rows.
 
     The direct grid builder returns coordinates in its own spacing units.
     `System.triangular_lattice()` applies the fixed-density Euclidean
@@ -188,6 +248,10 @@ def triangular_lattice(
         spacing,
         _default_triangular_spacing(width, height),
     )
+
+    if compact:
+        points = _compact_triangular_points(width * height) * spacing
+        return _finish_points(points, origin=origin, center=center)
 
     rows = np.arange(height, dtype=np.float64)
     cols = np.arange(width, dtype=np.float64)
@@ -205,10 +269,14 @@ def hexagonal_lattice(
     spacing: float | None = None,
     origin: Point2D | Sequence[float] = (0.0, 0.0),
     center: bool = False,
+    compact: bool = True,
 ) -> NDArray[np.float64]:
     """Return 2D coordinates for a honeycomb/hexagonal tiling lattice.
 
-    Each unit cell contributes two sites. `spacing` is the nearest-neighbor
+    The compact patch has exactly ``2 * width * height`` sites, with equal
+    populations on both sublattices. Width and height set the site budget,
+    not the aspect ratio. Set ``compact=False`` for the original parallelogram.
+    `spacing` is the nearest-neighbor
     distance between honeycomb sites. `System.hexagonal_lattice()` applies the
     fixed-density Euclidean normalization based on occupied sites by default.
     """
@@ -217,6 +285,10 @@ def hexagonal_lattice(
         spacing,
         _default_hexagonal_spacing(width, height),
     )
+
+    if compact:
+        points = _compact_triangular_points(width * height, honeycomb=True) * spacing
+        return _finish_points(points, origin=origin, center=center)
 
     a1 = np.array([np.sqrt(3.0) * spacing, 0.0], dtype=np.float64)
     a2 = np.array([np.sqrt(3.0) * spacing / 2.0, 1.5 * spacing], dtype=np.float64)
@@ -238,6 +310,7 @@ def honeycomb_lattice(
     spacing: float | None = None,
     origin: Point2D | Sequence[float] = (0.0, 0.0),
     center: bool = False,
+    compact: bool = True,
 ) -> NDArray[np.float64]:
     """Alias for `hexagonal_lattice`."""
     return hexagonal_lattice(
@@ -246,6 +319,7 @@ def honeycomb_lattice(
         spacing=spacing,
         origin=origin,
         center=center,
+        compact=compact,
     )
 
 
@@ -257,6 +331,7 @@ def regular_lattice(
     spacing: Spacing2D = None,
     origin: Point2D | Sequence[float] = (0.0, 0.0),
     center: bool = False,
+    compact: bool = True,
 ) -> NDArray[np.float64]:
     """
     Dispatch to a built-in 2D regular lattice constructor.
@@ -297,6 +372,7 @@ def regular_lattice(
             ),
             origin=origin,
             center=center,
+            compact=compact,
         )
     if lattice_key in {"hexagonal", "hex", "honeycomb"}:
         return hexagonal_lattice(
@@ -308,6 +384,7 @@ def regular_lattice(
             ),
             origin=origin,
             center=center,
+            compact=compact,
         )
 
     valid = "square, rectangular, triangular, hexagonal, honeycomb"

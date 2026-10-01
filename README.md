@@ -95,6 +95,26 @@ system = (
 Use `system.state_summary()` to inspect the current configuration, loaded
 metadata, and whether the system is ready for optimization.
 
+For a basic annealing run, the workflow is simply:
+
+```python
+system = gh.System.complementary(grid)
+system.compute_neighborhood(jump_distance=np.pi / 2)
+system.random_init(seed=123)
+system.anneal(starting_temp=1.0, final_temp=0.01, max_iterations=100, seed=456)
+print(system.best_probability)
+```
+
+The named constructors and keyword arguments are enough for ordinary runs;
+configuration and schedule objects are optional. To explore a different run
+from the same state, use `trial = system.clone()`. Spins and optimization
+histories are copied; the grid and precomputed neighborhood are shared.
+
+When adapting the physics, start with `kernels.py` for radial interaction
+weights and the `*_energy.py` modules for energies and move costs. `System`
+owns the spin state and neighborhood metadata directly; the optimization
+loops live in `annealing.py`, `greedy.py`, and `parallel_tempering.py`.
+
 ## Constructors
 
 The recommended entrypoints are:
@@ -140,9 +160,10 @@ hexagonal = gh.System.hexagonal_lattice(32, 32, density=0.5)
 Euclidean systems use a fixed total occupied spin-cell area of `1.0` by
 default. If `num_spins=k`, each occupied spin has area `1 / k`, so the 2D
 length scale is `1 / sqrt(k)` even when the candidate lattice has more than
-`k` sites. Raw `System.euclidean(grid, ...)` inputs and regular-lattice system
-constructors normalize the candidate grid to volume `site_count / k` by
-default. For example, with `num_spins=1000`, `jump_distance=0.30` has the same
+`k` sites. Regular-lattice system constructors use the known lattice-cell
+area to normalize the candidate grid to volume `site_count / k`.
+`System.euclidean(grid, ...)` estimates that volume from the bounding box of
+arbitrary input coordinates. For example, with `num_spins=1000`, `jump_distance=0.30` has the same
 physical meaning whether the square candidate grid is coarse or refined.
 
 The exported grid builders, such as `gh.square_lattice(...)`, only create raw
@@ -157,6 +178,23 @@ the system will still set the final physical scale from `num_spins`.
 sites per unit cell. `triangular_lattice()` builds the triangular Bravais
 lattice with six nearest neighbors in the interior.
 
+Triangular and honeycomb builders default to nearly circular patches to reduce
+boundary losses for isotropic jumps. They select sites nearest the patch center
+and retain exactly `width * height` triangular sites or `2 * width * height`
+honeycomb sites. Honeycomb patches keep equal populations on the two
+sublattices. Width and height specify the site budget, not the patch aspect
+ratio. Square and rectangular builders retain their Cartesian layouts.
+
+The compact patches preserve nearest-neighbor spacing. At fixed `num_spins=k`,
+the system constructors use spacing `sqrt(2 / (sqrt(3) * k))` for triangular
+grids and `sqrt(4 / (3 * sqrt(3) * k))` for honeycomb grids. Empty corners of
+the enclosing bounding box therefore do not distort the density.
+
+To reproduce an older rhombus-shaped grid, use the raw builder with
+`compact=False`, then construct `System.euclidean(grid, num_spins=...)`.
+Existing checkpoints need their original coordinates and site ordering;
+loading them onto the new compact layout would assign spins to different sites.
+
 The same grid constructors are also exported directly:
 
 ```python
@@ -166,6 +204,31 @@ system = gh.System.euclidean(grid, num_spins=grid.shape[0] // 2)
 
 All regular-lattice system constructors accept either `num_spins=` or
 `density=`. If both are omitted, they default to half filling.
+
+### Planar Fibonacci disk
+
+For a roughly uniform circular point set without a periodic lattice, use the
+Fibonacci (sunflower) initializer:
+
+```python
+system = gh.System.fibonacci_lattice(2048, num_spins=1024)
+system.compute_neighborhood(jump_distance=0.3)
+system.random_init(seed=123)
+system.greedy(max_steps=100)
+print(system.best_probability)
+
+# Coordinates only, with an explicit disk radius and center:
+grid = gh.fibonacci_lattice(2048, radius=1.0, origin=(0.0, 0.0))
+```
+
+The initializer returns exactly `num_sites` points in deterministic outward
+spiral order: `r_n = radius * sqrt((n + 0.5) / num_sites)` and
+`theta_n = n * pi * (3 - sqrt(5))`. The raw builder defaults to a disk of area
+1; `origin` is its geometric center. The `System` constructor accepts either
+`num_spins` or `density`, defaults to half filling, and sets disk area to
+`num_sites / num_spins`. Its `origin` is in final physical coordinates.
+Use this named constructor to retain disk-area normalization; the general
+`System.euclidean(grid, ...)` constructor estimates area from a bounding box.
 
 ## Neighborhood construction
 
@@ -292,10 +355,37 @@ only. Graph normalization also requires nonnegative interaction weights.
 Depending on the system family, you can initialize with:
 
 - `random_init(seed=...)`
+- `ball_init(radius)` for Euclidean grids
 - `hemisphere_init(seed=...)` for spherical systems
 - `tri_cog_init(num_cogs=..., cog_height=...)`
 - `cos_cog_init(num_cogs=..., cog_height=...)`
 - `array_init(spin_array)`
+
+For a Euclidean ball, specify the radius in cell lengths:
+
+```python
+system = gh.System.square_lattice(41, 41, density=0.5)
+system.compute_neighborhood(jump_distance=0.3)
+system.ball_init(radius=8)
+print(system.num_spins)  # Number of sites selected by the ball
+print(system.current_probability)
+```
+
+The center is the site nearest the grid's bounding-box midpoint; ties use the
+first site in grid order. All sites within the radius, including the boundary,
+are occupied. One cell length is `h = num_spins ** (-1 / dimension)` before
+initialization, so `radius=8` means distance `8*h`. This is the equal-volume
+cell length used by the kernels, which need not equal nearest-neighbor spacing
+on every lattice. Fractional radii are accepted; radius zero selects one site.
+
+The ball sets the new occupied-site count. When it differs from the previous
+`num_spins`, `ball_init()` rescales the grid to preserve occupied volume 1,
+rebuilds the neighborhood at the existing physical jump distance, and resets
+optimization histories. Current and best states, energies, and occupancy lists
+are initialized together. A ball covering the entire grid is rejected because
+fixed-density swaps need an empty site. Build the neighborhood first; the method
+returns the system and supports chaining. Reconstruct saved ball runs with the
+resulting `num_spins`, rather than the count supplied before `ball_init()`.
 
 Passing `seed=` to stochastic methods makes that call reproducible without
 advancing the caller's global NumPy random state. The stochastic methods with
@@ -443,6 +533,9 @@ returns `None`.
 Important persistence note:
 
 - spin state, energies, temperature, and optimizer histories are saved
+- current and best probabilities are saved as NetCDF attributes:
+  `current_probability` and `best_probability` use continuum normalization;
+  `current_graph_probability` and `best_graph_probability` use graph normalization
 - neighborhood construction metadata is saved, including scalar jump distance
   or spherical multi-shell jump distances/weights, kernel, Gaussian
   width/cutoff, distance metric, normalization metadata, grid shape/dtype, and
@@ -460,6 +553,27 @@ you omit those arguments. If the original kernel, metric, or shell measure was
 a custom callable, pass it again while rebuilding. Format `5.0` is written;
 format `4.0` checkpoints are also read and their complementary-model metadata
 is migrated during loading.
+
+Saved probabilities can be read immediately after loading, without rebuilding
+the neighborhood, and survive saving the loaded system again:
+
+```python
+import xarray as xr
+
+system.load(path)
+print(system.best_probability)
+print(system.current_graph_probability)
+# Or inspect the file directly:
+with xr.open_dataset(path) as ds:
+    print(ds.attrs["best_probability"])
+```
+
+Some kernels do not define both normalizations. For example, the exact kernel
+supports graph probability but not continuum probability. An undefined value
+is omitted and an attribute such as `current_probability_unavailable` explains
+why. Older files without probabilities still load; rebuild their neighborhood
+to calculate them. The live system must have the same `num_spins` as the saved
+run, since this sets the physical scale for Euclidean grids.
 
 Built-in metadata can be rebuilt automatically:
 
