@@ -43,6 +43,29 @@ If you prefer using the repository requirements file:
 pip install -r requirements.txt
 ```
 
+## Upgrading from 1.x
+
+Version 2.0 renames parts of the public API. Files saved by 1.x still load.
+
+| 1.x | 2.0 |
+| --- | --- |
+| `System(grid, config=SystemConfig.euclidean(), ...)` | `System(grid, SystemKind.EUCLIDEAN, ...)` |
+| `system.config`, `.geometry`, `.constraint`, `.interaction_model`, `.update_rule` | `system.kind` (with `kind.spherical`, `kind.antipodal`, `kind.fixed_density`) |
+| `System.non_antipodal(grid)` | `System.fixed_density(grid)` |
+| `NonAntipodalNeighborhood`, `NonAntipodalNeighborhoodCSR` | `FixedDensityNeighborhood`, `FixedDensityNeighborhoodCSR` |
+| `current_system`, `best_system` | `current_spins`, `best_spins` |
+| `current_graph_probability`, `best_graph_probability` | `probability(normalization="graph")`, `probability("best", normalization="graph")` |
+| `probability(None)` | `probability()` or `probability("current")` |
+| `System.rectangular_lattice(...)`, `.triangular_lattice`, `.hexagonal_lattice`, `.honeycomb_lattice` | `System.regular_lattice("rectangular", ...)` and so on |
+| `tri_cog_init`, `cos_cog_init` | `triangle_cogwheel_init`, `cosine_cogwheel_init` |
+| `plot(plot_current=True)`, `plot_boundary(plot_current=True)` | `plot(state="current")`, `plot_boundary(state="current")` |
+| `compute_neighborhood(silent=False)`, `load(..., silent=False)` | `verbose=True` |
+| positional arguments to `plot()`, `plot_boundary()`, `thermalize()` | keyword arguments only |
+| `snapshot_state`, `restore_state`, `set_occupancy`, `sync_occupancy_from_spins` | private |
+| GPU helpers in `grasshopper.build_neighbors_gpu` | removed |
+
+`anneal()` now returns `anneal_data`, and `load()` returns the system.
+
 ## Package layout
 
 - [`grasshopper/`](grasshopper/) - installable library package

@@ -362,6 +362,33 @@ class ProbabilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported saved-state"):
             rejected.load(legacy_path)
 
+    def test_version_six_files_with_legacy_names_still_load(self) -> None:
+        test_dir = make_test_dir(self.id().replace(".", "_"))
+        system = gh.System.euclidean(euclidean_grid(), num_spins=2)
+        system.compute_neighborhood(1.0)
+        system.array_init(np.array([True, False, True, False], dtype=bool))
+
+        legacy = system.to_dataset().rename(
+            {"current_spins": "current_system", "best_spins": "best_system"}
+        )
+        del legacy.attrs["kind"]
+        legacy.attrs.update(
+            format_version="6.0",
+            geometry="euclidean",
+            constraint="fixed-density",
+            interaction_model="occupancy",
+            update_rule="swap",
+        )
+        legacy_path = test_dir / "v6_euclidean.nc"
+        legacy.to_netcdf(legacy_path)
+
+        loaded = gh.System.euclidean(euclidean_grid(), num_spins=2).load(
+            legacy_path, rebuild_neighborhood=True
+        )
+        np.testing.assert_array_equal(loaded.current_spins, system.current_spins)
+        np.testing.assert_array_equal(loaded.best_spins, system.best_spins)
+        self.assertAlmostEqual(loaded.current_energy, system.current_energy)
+
     def test_version_four_inverse_metadata_migrates_to_complementary(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.complementary(spherical_grid())
