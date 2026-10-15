@@ -59,7 +59,7 @@ class FibonacciLatticeTests(unittest.TestCase):
             radial_area = np.pi * np.sum((system.grid - (2, -1)) ** 2, axis=1)
             np.testing.assert_allclose(np.diff(radial_area), 1 / 32)
         system = gh.System.fibonacci_lattice(64, density=0.5)
-        system.compute_neighborhood(0.3, silent=True)
+        system.compute_neighborhood(0.3)
         system.random_init(seed=123)
         system.greedy(max_steps=10, reinit=False)
         self.assertEqual(np.count_nonzero(system.current_spins), 32)
@@ -137,7 +137,7 @@ class CompactLatticeTests(unittest.TestCase):
                 distances = cKDTree(system.grid).query(system.grid, k=2)[0][:, 1]
                 np.testing.assert_allclose(distances, np.sqrt(1 / (50 * area_factor)))
                 self.assertEqual(system.num_spins, 50)
-                system.compute_neighborhood(jump_distance=0.2, silent=True)
+                system.compute_neighborhood(jump_distance=0.2)
                 system.random_init(seed=123)
                 self.assertEqual(np.count_nonzero(system.current_spins), 50)
                 self.assertTrue(np.isfinite(system.current_probability))

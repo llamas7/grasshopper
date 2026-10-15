@@ -40,7 +40,6 @@ def main(argv: Sequence[str] | None = None) -> gh.System:
     system.compute_neighborhood(
         jump_distance=args.theta_over_pi * np.pi,
         kernel=gh.KernelSpec.cosine(),
-        silent=True,
     )
     system.random_init(seed=args.seed)
     optimize(

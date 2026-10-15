@@ -30,13 +30,13 @@ class OptimizationFlowTests(unittest.TestCase):
 
     def make_complementary_system(self) -> gh.System:
         system = gh.System.complementary(spherical_grid())
-        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        system.compute_neighborhood(jump_distance=np.pi / 2)
         system.array_init(np.array([True, False, True], dtype=bool))
         return system
 
     def make_independent_system(self) -> gh.System:
         system = gh.System.independent(spherical_grid())
-        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        system.compute_neighborhood(jump_distance=np.pi / 2)
         system.array_init(
             np.array(
                 [
@@ -51,7 +51,7 @@ class OptimizationFlowTests(unittest.TestCase):
 
     def make_fixed_density_system(self) -> gh.System:
         system = gh.System.fixed_density(spherical_grid())
-        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        system.compute_neighborhood(jump_distance=np.pi / 2)
         system.array_init(
             np.array([True, False, True, False, True, False], dtype=bool)
         )
@@ -59,7 +59,7 @@ class OptimizationFlowTests(unittest.TestCase):
 
     def make_euclidean_system(self) -> gh.System:
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        system.compute_neighborhood(jump_distance=1.0, silent=True)
+        system.compute_neighborhood(jump_distance=1.0)
         system.array_init(np.array([True, False, True, False], dtype=bool))
         return system
 
@@ -84,18 +84,18 @@ class OptimizationFlowTests(unittest.TestCase):
 
         clone.greedy_history.records.clear()
         self.assertTrue(system.greedy_history.records)
-        clone.compute_neighborhood(jump_distance=0.8, silent=True)
+        clone.compute_neighborhood(jump_distance=0.8)
         self.assertEqual(system.jump_distance, 1.0)
         self.assertEqual(clone.jump_distance, 0.8)
 
     def test_snapshot_restore_is_detached_and_restores_physical_state(self) -> None:
         system = self.make_euclidean_system()
-        state = system.snapshot_state()
+        state = system._snapshot_state()
         original_spins = state.current_spins.copy()
         system.array_init(~original_spins)
         np.testing.assert_array_equal(state.current_spins, original_spins)
 
-        system.restore_state(state)
+        system._restore_state(state)
         np.testing.assert_array_equal(system.current_spins, original_spins)
         self.assertAlmostEqual(system.current_energy, exact_energy(system))
         assert_fixed_density_consistent(self, system)

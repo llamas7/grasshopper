@@ -405,7 +405,7 @@ class ProbabilityTests(unittest.TestCase):
         for index, construct in enumerate(constructors):
             with self.subTest(family=index):
                 system = construct()
-                system.compute_neighborhood(1.0, silent=True)
+                system.compute_neighborhood(1.0)
                 system.random_init(seed=123)
                 system.greedy(reinit=False)
                 expected = {key: read(system, key) for key in keys}
@@ -434,14 +434,14 @@ class ProbabilityTests(unittest.TestCase):
                 self.assertAlmostEqual(loaded.probability(normalization="graph"),
                                        expected["current_graph_probability"])
 
-                loaded.compute_neighborhood(silent=True)
+                loaded.compute_neighborhood()
                 for key, value in expected.items():
                     self.assertAlmostEqual(read(loaded, key), value)
 
     def test_save_records_why_continuum_probability_is_unavailable(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        system.compute_neighborhood(1.0, kernel=gh.KernelSpec.exact(), silent=True)
+        system.compute_neighborhood(1.0, kernel=gh.KernelSpec.exact())
         system.array_init(np.array([True, False, True, False], dtype=bool))
         expected = system.probability(normalization="graph")
         path = system.save(test_dir / "exact.nc")
@@ -456,7 +456,7 @@ class ProbabilityTests(unittest.TestCase):
     def test_load_rejects_different_particle_count_and_malformed_spins(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        system.compute_neighborhood(1.0, silent=True)
+        system.compute_neighborhood(1.0)
         system.random_init(seed=123)
         path = system.save(test_dir / "state.nc")
         different_density = gh.System.euclidean(euclidean_grid(), num_spins=1)
@@ -472,7 +472,7 @@ class ProbabilityTests(unittest.TestCase):
     def test_older_checkpoint_without_probabilities_can_be_rebuilt(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.complementary(spherical_grid())
-        system.compute_neighborhood(1.0, silent=True)
+        system.compute_neighborhood(1.0)
         system.random_init(seed=123)
         ds = system.to_dataset()
         for key in list(ds.attrs):

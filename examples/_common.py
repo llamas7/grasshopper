@@ -169,13 +169,13 @@ def save_euclidean_plot(
     *,
     title: str,
     show: bool,
-    plot_current: bool = False,
+    state: str = "best",
     voronoi: bool = False,
     show_edges: bool = False,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     figure = system.plot(
-        plot_current=plot_current,
+        state=state,
         voronoi=voronoi,
         show_edges=show_edges,
         plot_figure=False,

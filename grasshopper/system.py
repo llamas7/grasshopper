@@ -530,7 +530,7 @@ class System:
         *,
         jump_weights: Sequence[float] | None = None,
         kernel: KernelSpec | str | Callable | None = None,
-        silent: bool = True,
+        verbose: bool = False,
         distance_metric: DistanceMetric | None = None,
         shell_measure: Callable[[float], float] | None = None,
         radial_bounds: tuple[float, float] | None = None,
@@ -589,7 +589,7 @@ class System:
                 self.grid,
                 self.jump_distance,
                 kernel=resolved_kernel,
-                silent=silent,
+                silent=not verbose,
                 distance_metric=metric,
                 occupied_sites=self.num_spins,
             )
@@ -604,7 +604,7 @@ class System:
             self.jump_distance,
             antipodal=self.antipodal,
             kernel=resolved_kernel,
-            silent=silent,
+            silent=not verbose,
             distance_metric=metric,
             jump_weights=self.jump_weights,
         )
@@ -672,7 +672,7 @@ class System:
         clone.__dict__ = self.__dict__.copy()
         clone._stored_probabilities = self._stored_probabilities.copy()
         clone._stored_angle_probabilities = {k: tuple(v) for k, v in self._stored_angle_probabilities.items()}
-        state = self.snapshot_state()
+        state = self._snapshot_state()
         clone._current_spins = state.current_spins
         clone._best_spins = state.best_spins
         clone._occupancy = state.occupancy
@@ -684,14 +684,14 @@ class System:
     def __copy__(self) -> "System":
         return self.clone()
 
-    def set_occupancy(self, occupancy: OccupancyState | None) -> None:
+    def _set_occupancy(self, occupancy: OccupancyState | None) -> None:
         """Attach fixed-density occupancy lists."""
         self._occupancy = None if occupancy is None else occupancy.copy()
 
-    def sync_occupancy_from_spins(self) -> None:
+    def _sync_occupancy_from_spins(self) -> None:
         """Rebuild occupied/unoccupied lists from current_spins."""
         if self.current_spins is None:
-            self.set_occupancy(None)
+            self._set_occupancy(None)
             return
         occupancy = OccupancyState.from_spin_array(self.current_spins)
         if (
@@ -703,7 +703,7 @@ class System:
             )
         self._occupancy = occupancy
 
-    def snapshot_state(self) -> SystemState:
+    def _snapshot_state(self) -> SystemState:
         """Return a detached copy of mutable spin state."""
         return SystemState(
             current_spins=self.current_spins,
@@ -713,7 +713,7 @@ class System:
             occupancy=self.occupancy,
         ).copy()
 
-    def restore_state(self, state: SystemState) -> None:
+    def _restore_state(self, state: SystemState) -> None:
         """Restore mutable spin state from a snapshot."""
         state = state.copy()
         self.current_spins = state.current_spins
@@ -792,14 +792,14 @@ class System:
         self._initialized = True
         return self
 
-    def tri_cog_init(self, num_cogs: int, cog_height: float) -> "System":
+    def triangle_cogwheel_init(self, num_cogs: int, cog_height: float) -> "System":
         """Initialize a spherical system to a triangle-wave cogwheel boundary."""
         self._require_neighborhood()
         init_triangle_cogwheel(self, num_cogs, cog_height)
         self._initialized = True
         return self
 
-    def cos_cog_init(self, num_cogs: int, cog_height: float) -> "System":
+    def cosine_cogwheel_init(self, num_cogs: int, cog_height: float) -> "System":
         """Initialize a spherical system to a cosine-wave cogwheel boundary."""
         self._require_neighborhood()
         init_cosine_cogwheel(self, num_cogs, cog_height)
@@ -933,6 +933,7 @@ class System:
 
     def thermalize(
         self,
+        *,
         target_acceptance: float = 0.6,
         tolerance: float = 0.05,
         steps_per_temp: int | None = None,
@@ -980,7 +981,8 @@ class System:
 
     def plot(
         self,
-        plot_current: bool = False,
+        *,
+        state: str = "best",
         auto_rotate: bool = False,
         show_edges: bool = False,
         edge_distance: float | None = None,
@@ -988,8 +990,8 @@ class System:
         voronoi: bool = False,
         plot_figure: bool = True,
     ):
-        """Plot the best (or current) spin state; returns the figure if not shown."""
-        system_to_plot = self.current_spins if plot_current else self.best_spins
+        """Plot the ``"best"`` or ``"current"`` spin state; returns the figure if not shown."""
+        system_to_plot = self._spins_for_state(state)
         if system_to_plot is None and self.kind is not SystemKind.EUCLIDEAN:
             self._require_init()
         voronoi_padding_distance = None
@@ -1008,7 +1010,7 @@ class System:
             kind=self.kind,
             grid_points=self.grid,
             spin_states=system_to_plot,
-            fig_title="Current System" if plot_current else "Best System",
+            fig_title=f"{state.capitalize()} System",
             rotate=auto_rotate,
             show_edges=show_edges,
             edge_distance=edge_distance,
@@ -1059,13 +1061,13 @@ class System:
             plot_figure=plot_figure,
         )
 
-    def plot_boundary(self, plot_current: bool = False, plot_figure: bool = True):
+    def plot_boundary(self, *, state: str = "best", plot_figure: bool = True):
         """Plot the up/down boundary in (phi, theta); returns ``(fig, ax)`` if not shown."""
         if self.kind is SystemKind.EUCLIDEAN:
             raise ValueError(
                 "Boundary plotting is only implemented for spherical grids."
             )
-        system_to_plot = self.current_spins if plot_current else self.best_spins
+        system_to_plot = self._spins_for_state(state)
         independent = self.kind is SystemKind.INDEPENDENT
         return graph_boundary(
             grid=self.grid,
@@ -1160,7 +1162,7 @@ class System:
         load_path: str | Path,
         *,
         rebuild_neighborhood: bool = False,
-        silent: bool = True,
+        verbose: bool = False,
     ) -> "System":
         """
         Load state from NetCDF saved by `save()` without touching `self.grid`.
@@ -1314,9 +1316,9 @@ class System:
                     self._stored_probabilities[key] = value
 
         if not self.antipodal and self.current_spins is not None:
-            self.sync_occupancy_from_spins()
+            self._sync_occupancy_from_spins()
         else:
-            self.set_occupancy(None)
+            self._set_occupancy(None)
 
         # Neighborhood rows are not stored in the dataset.
         self._neighborhood = None
@@ -1355,7 +1357,7 @@ class System:
                     kernel=self.kernel,
                 )
             else:
-                self.compute_neighborhood(silent=silent)
+                self.compute_neighborhood(verbose=verbose)
         return self
 
     # --- Implementation helpers ---
@@ -1623,6 +1625,11 @@ class System:
         self._kind = kind
         self._num_spins = resolved_num_spins
 
+    def _spins_for_state(self, state: str) -> NDArray[np.bool_] | None:
+        if state not in ("current", "best"):
+            raise ValueError(f"state must be 'current' or 'best', got {state!r}.")
+        return self.current_spins if state == "current" else self.best_spins
+
     def _forget_stored_probabilities(self, state: str) -> None:
         """Drop probabilities loaded from disk once a state's spins or energy change."""
         self._stored_probabilities.pop(f"{state}_probability", None)
@@ -1647,7 +1654,7 @@ class System:
     def _require_init(self) -> None:
         if not self.initialized:
             raise RuntimeError(
-                "System needs to be initialized. Call random_init(), ball_init(), hemisphere_init(), tri_cog_init(), cos_cog_init(), or array_init() first."
+                "System needs to be initialized. Call random_init(), ball_init(), hemisphere_init(), triangle_cogwheel_init(), cosine_cogwheel_init(), or array_init() first."
             )
 
     def _spin_dims_and_coords(self) -> tuple[tuple[str, ...], dict[str, np.ndarray]]:

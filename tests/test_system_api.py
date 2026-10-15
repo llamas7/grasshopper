@@ -287,7 +287,6 @@ class SystemApiTests(unittest.TestCase):
         system.compute_neighborhood(
             jump_distance=0.25,
             kernel=record_cell_length,
-            silent=True,
         )
 
         self.assertTrue(seen_cell_lengths)
@@ -308,7 +307,6 @@ class SystemApiTests(unittest.TestCase):
             system.compute_neighborhood(
                 jump_distance=0.25,
                 kernel=record_cell_length,
-                silent=True,
             )
             return seen_cell_lengths
 
@@ -345,8 +343,8 @@ class SystemApiTests(unittest.TestCase):
             num_spins=num_spins,
         )
 
-        manual_system.compute_neighborhood(jump_distance=jump_distance, silent=True)
-        builtin_system.compute_neighborhood(jump_distance=jump_distance, silent=True)
+        manual_system.compute_neighborhood(jump_distance=jump_distance)
+        builtin_system.compute_neighborhood(jump_distance=jump_distance)
         self.assertEqual(manual_system.kernel, builtin_system.kernel)
 
         manual_to_builtin = np.empty(len(manual_grid), dtype=np.int64)
@@ -379,9 +377,9 @@ class SystemApiTests(unittest.TestCase):
 
         self.assertFalse(hasattr(system, "plot_lattice"))
 
-        system.compute_neighborhood(jump_distance=1.0, silent=True)
+        system.compute_neighborhood(jump_distance=1.0)
         system.random_init(seed=1)
-        spin_fig = system.plot(plot_current=True, show_edges=True, plot_figure=False)
+        spin_fig = system.plot(state="current", show_edges=True, plot_figure=False)
         self.assertIsInstance(spin_fig, plt.Figure)
         labels = set(spin_fig.axes[0].get_legend_handles_labels()[1])
         self.assertIn("A", labels)
@@ -417,7 +415,7 @@ class SystemApiTests(unittest.TestCase):
 
     def test_euclidean_plot_voronoi_colors_cells_by_spin_state(self) -> None:
         system = gh.System.square_lattice(3, 3, num_spins=4)
-        system.compute_neighborhood(jump_distance=1.0, silent=True)
+        system.compute_neighborhood(jump_distance=1.0)
         system.array_init(
             np.array(
                 [
@@ -435,7 +433,7 @@ class SystemApiTests(unittest.TestCase):
             )
         )
 
-        fig = system.plot(plot_current=True, voronoi=True, plot_figure=False)
+        fig = system.plot(state="current", voronoi=True, plot_figure=False)
         ax = fig.axes[0]
         patch_labels = {patch.get_label() for patch in ax.patches}
 
@@ -447,12 +445,12 @@ class SystemApiTests(unittest.TestCase):
 
     def test_voronoi_padding_uses_half_cell_length(self) -> None:
         system = gh.System.square_lattice(3, 3, num_spins=4)
-        system.compute_neighborhood(jump_distance=1.5, silent=True)
+        system.compute_neighborhood(jump_distance=1.5)
         system.random_init(seed=1)
         expected_padding = ((1.0 / system.num_spins) ** (1.0 / system.dimension)) / 2.0
 
         with mock.patch("grasshopper.system.plot_spin_system") as plot_spin_system:
-            system.plot(plot_current=True, voronoi=True, plot_figure=False)
+            system.plot(state="current", voronoi=True, plot_figure=False)
             self.assertAlmostEqual(
                 plot_spin_system.call_args.kwargs["voronoi_padding_distance"],
                 expected_padding,
@@ -473,7 +471,7 @@ class SystemApiTests(unittest.TestCase):
 
     def test_plot_voronoi_requires_2d_euclidean_system(self) -> None:
         system = gh.System.complementary(spherical_grid())
-        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        system.compute_neighborhood(jump_distance=np.pi / 2)
         system.hemisphere_init(seed=1)
 
         with self.assertRaisesRegex(ValueError, "2D Euclidean"):
@@ -483,7 +481,6 @@ class SystemApiTests(unittest.TestCase):
         system = gh.System.square_lattice(3, 3, num_spins=4)
         system.compute_neighborhood(
             jump_distance=1.5,
-            silent=True,
         )
 
         fig = system.plot_neighbors(
@@ -521,7 +518,7 @@ class SystemApiTests(unittest.TestCase):
     def test_plot_neighbors_skips_tiny_grids(self) -> None:
         grid = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=float)
         system = gh.System.euclidean(grid, num_spins=1)
-        system.compute_neighborhood(jump_distance=1.0, silent=True)
+        system.compute_neighborhood(jump_distance=1.0)
 
         fig = system.plot_neighbors(selected_site=0, plot_figure=False)
         ax = fig.axes[0]
@@ -569,39 +566,39 @@ class SystemApiTests(unittest.TestCase):
 
     def test_compute_neighborhood_storage_matches_config(self) -> None:
         complementary = gh.System.complementary(spherical_grid())
-        complementary.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        complementary.compute_neighborhood(jump_distance=np.pi / 2)
         self.assertIsInstance(complementary.neighborhood, list)
 
         fixed_density = gh.System.fixed_density(spherical_grid())
-        fixed_density.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        fixed_density.compute_neighborhood(jump_distance=np.pi / 2)
         self.assertIsInstance(fixed_density.neighborhood, gh.FixedDensityNeighborhoodCSR)
 
         euclidean = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        euclidean.compute_neighborhood(jump_distance=1.0, silent=True)
+        euclidean.compute_neighborhood(jump_distance=1.0)
         self.assertIsInstance(euclidean.neighborhood, gh.FixedDensityNeighborhoodCSR)
 
     def test_setup_methods_return_the_same_system_for_chaining(self) -> None:
         complementary = gh.System.complementary(spherical_grid())
         self.assertIs(
-            complementary.compute_neighborhood(jump_distance=np.pi / 2, silent=True),
+            complementary.compute_neighborhood(jump_distance=np.pi / 2),
             complementary,
         )
         self.assertIs(complementary.random_init(seed=1), complementary)
 
         hemisphere = gh.System.complementary(spherical_grid())
-        hemisphere.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        hemisphere.compute_neighborhood(jump_distance=np.pi / 2)
         self.assertIs(hemisphere.hemisphere_init(seed=2), hemisphere)
 
         triangle = gh.System.complementary(spherical_grid())
-        triangle.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
-        self.assertIs(triangle.tri_cog_init(num_cogs=3, cog_height=0.1), triangle)
+        triangle.compute_neighborhood(jump_distance=np.pi / 2)
+        self.assertIs(triangle.triangle_cogwheel_init(num_cogs=3, cog_height=0.1), triangle)
 
         cosine = gh.System.complementary(spherical_grid())
-        cosine.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
-        self.assertIs(cosine.cos_cog_init(num_cogs=3, cog_height=0.1), cosine)
+        cosine.compute_neighborhood(jump_distance=np.pi / 2)
+        self.assertIs(cosine.cosine_cogwheel_init(num_cogs=3, cog_height=0.1), cosine)
 
         explicit = gh.System.complementary(spherical_grid())
-        explicit.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        explicit.compute_neighborhood(jump_distance=np.pi / 2)
         self.assertIs(
             explicit.array_init(np.array([True, False, True], dtype=bool)),
             explicit,
@@ -629,7 +626,6 @@ class SystemApiTests(unittest.TestCase):
         system.compute_neighborhood(
             jump_distance=[0.48 * np.pi, 0.52 * np.pi],
             jump_weights=[1.0, 0.75],
-            silent=True,
         )
         built = system.state_summary()
         self.assertTrue(built["neighborhood_built"])
@@ -651,7 +647,7 @@ class SystemApiTests(unittest.TestCase):
 
     def test_scalar_jump_distance_metadata_remains_backward_compatible(self) -> None:
         system = gh.System.complementary(spherical_grid())
-        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        system.compute_neighborhood(jump_distance=np.pi / 2)
 
         attrs = system.to_dataset().attrs
 
@@ -668,12 +664,11 @@ class SystemApiTests(unittest.TestCase):
         multi.compute_neighborhood(
             jump_distance=distances,
             jump_weights=weights,
-            silent=True,
         )
         scalar_systems = []
         for distance in distances:
             scalar = gh.System.complementary(spherical_grid())
-            scalar.compute_neighborhood(jump_distance=distance, silent=True)
+            scalar.compute_neighborhood(jump_distance=distance)
             scalar_systems.append(scalar)
 
         self.assertEqual(multi.jump_distance, distances)
@@ -687,12 +682,11 @@ class SystemApiTests(unittest.TestCase):
         multi.compute_neighborhood(
             jump_distance=distances,
             jump_weights=weights,
-            silent=True,
         )
         scalar_systems = []
         for distance in distances:
             scalar = gh.System.independent(spherical_grid())
-            scalar.compute_neighborhood(jump_distance=distance, silent=True)
+            scalar.compute_neighborhood(jump_distance=distance)
             scalar_systems.append(scalar)
 
         self._assert_weighted_antipodal_rows_equal(multi, scalar_systems, weights)
@@ -704,12 +698,11 @@ class SystemApiTests(unittest.TestCase):
         multi.compute_neighborhood(
             jump_distance=distances,
             jump_weights=weights,
-            silent=True,
         )
         scalar_systems = []
         for distance in distances:
             scalar = gh.System.fixed_density(spherical_grid())
-            scalar.compute_neighborhood(jump_distance=distance, silent=True)
+            scalar.compute_neighborhood(jump_distance=distance)
             scalar_systems.append(scalar)
 
         self._assert_weighted_fixed_density_rows_equal(
@@ -721,28 +714,25 @@ class SystemApiTests(unittest.TestCase):
     def test_multi_shell_validation_errors_are_clear(self) -> None:
         system = gh.System.complementary(spherical_grid())
         with self.assertRaisesRegex(ValueError, "non-empty 1D sequence"):
-            system.compute_neighborhood(jump_distance=[], silent=True)
+            system.compute_neighborhood(jump_distance=[])
         with self.assertRaisesRegex(ValueError, "finite"):
             system.compute_neighborhood(
                 jump_distance=[np.pi / 2, np.nan],
-                silent=True,
             )
         with self.assertRaisesRegex(ValueError, "one finite value per jump distance"):
             system.compute_neighborhood(
                 jump_distance=[np.pi / 3, np.pi / 2],
                 jump_weights=[1.0],
-                silent=True,
             )
         with self.assertRaisesRegex(ValueError, "jump_weights values must be finite"):
             system.compute_neighborhood(
                 jump_distance=[np.pi / 3, np.pi / 2],
                 jump_weights=[1.0, np.inf],
-                silent=True,
             )
 
         euclidean = gh.System.euclidean(euclidean_grid(), num_spins=2)
         with self.assertRaisesRegex(ValueError, "spherical systems"):
-            euclidean.compute_neighborhood(jump_distance=[1.0, 1.5], silent=True)
+            euclidean.compute_neighborhood(jump_distance=[1.0, 1.5])
 
     def test_multi_shell_save_load_restores_rebuild_metadata(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
@@ -752,7 +742,6 @@ class SystemApiTests(unittest.TestCase):
         system.compute_neighborhood(
             jump_distance=distances,
             jump_weights=weights,
-            silent=True,
         )
         system.array_init(np.array([True, False, True, False, True, False]))
         save_path = system.save(test_dir)
@@ -768,7 +757,7 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(loaded.jump_distance, distances)
         self.assertEqual(loaded.jump_weights, weights)
         self.assertIsNone(loaded.neighborhood)
-        loaded.compute_neighborhood(silent=True)
+        loaded.compute_neighborhood()
         self._assert_weighted_fixed_density_rows_equal(
             loaded,
             [system],
@@ -788,7 +777,6 @@ class SystemApiTests(unittest.TestCase):
             rows = euclidean_neighbors.build_euclidean_neighborhood(
                 euclidean_grid(),
                 jump_distance=1.0,
-                silent=True,
                 distance_metric="euclidean",
             )
 
@@ -818,7 +806,6 @@ class SystemApiTests(unittest.TestCase):
             rows = euclidean_neighbors.build_euclidean_neighborhood(
                 grid,
                 jump_distance=1.0,
-                silent=True,
                 distance_metric="euclidean",
             )
 
@@ -842,7 +829,6 @@ class SystemApiTests(unittest.TestCase):
             rows = euclidean_neighbors.build_euclidean_neighborhood(
                 euclidean_grid(),
                 jump_distance=1.0,
-                silent=True,
                 distance_metric=custom_metric,
             )
 
@@ -882,7 +868,6 @@ class SystemApiTests(unittest.TestCase):
         system.compute_neighborhood(
             jump_distance=1.0,
             kernel=custom_delta,
-            silent=True,
         )
 
         attrs = system.to_dataset().attrs
@@ -902,7 +887,6 @@ class SystemApiTests(unittest.TestCase):
         system.compute_neighborhood(
             jump_distance=1.0,
             kernel=custom_delta,
-            silent=True,
         )
         system.array_init(np.array([True, False, True, False], dtype=bool))
         save_path = system.save(test_dir)
@@ -911,9 +895,9 @@ class SystemApiTests(unittest.TestCase):
         loaded.load(save_path)
 
         with self.assertRaisesRegex(ValueError, "custom kernel"):
-            loaded.compute_neighborhood(silent=True)
+            loaded.compute_neighborhood()
 
-        loaded.compute_neighborhood(kernel=custom_delta, silent=True)
+        loaded.compute_neighborhood(kernel=custom_delta)
         self.assertIs(loaded.kernel, custom_delta)
         self.assertIsInstance(loaded.neighborhood, gh.FixedDensityNeighborhoodCSR)
 
@@ -923,12 +907,12 @@ class SystemApiTests(unittest.TestCase):
         np.random.seed(777)
 
         first = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        first.compute_neighborhood(jump_distance=1.0, silent=True)
+        first.compute_neighborhood(jump_distance=1.0)
         first.random_init(seed=42)
         actual_next = np.random.random()
 
         second = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        second.compute_neighborhood(jump_distance=1.0, silent=True)
+        second.compute_neighborhood(jump_distance=1.0)
         second.random_init(seed=42)
 
         self.assertEqual(actual_next, expected_next)
@@ -940,12 +924,12 @@ class SystemApiTests(unittest.TestCase):
         np.random.seed(888)
 
         first = gh.System.complementary(spherical_grid())
-        first.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        first.compute_neighborhood(jump_distance=np.pi / 2)
         first.hemisphere_init(seed=123)
         actual_next = np.random.random()
 
         second = gh.System.complementary(spherical_grid())
-        second.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        second.compute_neighborhood(jump_distance=np.pi / 2)
         second.hemisphere_init(seed=123)
 
         self.assertEqual(actual_next, expected_next)
@@ -953,7 +937,7 @@ class SystemApiTests(unittest.TestCase):
 
     def test_seed_validation_rejects_bool(self) -> None:
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        system.compute_neighborhood(jump_distance=1.0, silent=True)
+        system.compute_neighborhood(jump_distance=1.0)
 
         with self.assertRaises(TypeError):
             system.random_init(seed=True)
@@ -1013,7 +997,7 @@ class SystemApiTests(unittest.TestCase):
     def test_save_directory_and_explicit_file_paths(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.complementary(spherical_grid())
-        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        system.compute_neighborhood(jump_distance=np.pi / 2)
         system.array_init(np.array([True, False, True], dtype=bool))
 
         folder_path = system.save(test_dir / "folder_target")
@@ -1026,7 +1010,7 @@ class SystemApiTests(unittest.TestCase):
 
     def test_to_dataset_uses_current_persistence_schema(self) -> None:
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        system.compute_neighborhood(jump_distance=1.0, silent=True)
+        system.compute_neighborhood(jump_distance=1.0)
         system.array_init(np.array([True, False, True, False], dtype=bool))
 
         attrs = system.to_dataset().attrs
@@ -1063,7 +1047,6 @@ class SystemApiTests(unittest.TestCase):
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
         system.compute_neighborhood(
             jump_distance=1.0,
-            silent=True,
             distance_metric="manhattan",
         )
         system.array_init(np.array([True, False, True, False], dtype=bool))
@@ -1075,7 +1058,7 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(loaded.distance_metric, "manhattan")
         self.assertIsNone(loaded.neighborhood)
 
-        loaded.compute_neighborhood(silent=True)
+        loaded.compute_neighborhood()
         self.assertEqual(loaded.distance_metric, "manhattan")
         self.assertIsInstance(loaded.neighborhood, gh.FixedDensityNeighborhoodCSR)
 
@@ -1086,7 +1069,6 @@ class SystemApiTests(unittest.TestCase):
         system.compute_neighborhood(
             jump_distance=1.0,
             kernel=gh.KernelSpec.gaussian(0.2, cutoff=5.0),
-            silent=True,
         )
         system.array_init(state)
         save_path = system.save(test_dir)
@@ -1097,7 +1079,7 @@ class SystemApiTests(unittest.TestCase):
         self.assertFalse(loaded_without_rebuild.state_summary()["ready"])
 
         loaded = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        loaded.load(save_path, rebuild_neighborhood=True, silent=True)
+        loaded.load(save_path, rebuild_neighborhood=True)
 
         self.assertIsInstance(loaded.neighborhood, gh.FixedDensityNeighborhoodCSR)
         self.assertTrue(loaded.state_summary()["ready"])
@@ -1115,14 +1097,13 @@ class SystemApiTests(unittest.TestCase):
         system.compute_neighborhood(
             jump_distance=1.0,
             kernel=custom_kernel,
-            silent=True,
         )
         system.array_init(np.array([True, False, True, False], dtype=bool))
         save_path = system.save(test_dir)
 
         loaded = gh.System.euclidean(euclidean_grid(), num_spins=2)
         with self.assertRaisesRegex(ValueError, "custom kernel"):
-            loaded.load(save_path, rebuild_neighborhood=True, silent=True)
+            loaded.load(save_path, rebuild_neighborhood=True)
 
         self.assertIsNone(loaded.neighborhood)
         self.assertTrue(loaded.initialized)
@@ -1136,14 +1117,13 @@ class SystemApiTests(unittest.TestCase):
             distance_metric="manhattan",
             shell_measure=lambda radius: 8.0 * radius,
             radial_bounds=(0.0, 4.0),
-            silent=True,
         )
         system.array_init(np.array([True, False, True, False], dtype=bool))
         save_path = system.save(test_dir)
 
         loaded = gh.System.euclidean(euclidean_grid(), num_spins=2)
         with self.assertRaisesRegex(ValueError, "custom shell_measure"):
-            loaded.load(save_path, rebuild_neighborhood=True, silent=True)
+            loaded.load(save_path, rebuild_neighborhood=True)
 
         self.assertIsNone(loaded.neighborhood)
         self.assertTrue(loaded.initialized)
@@ -1151,7 +1131,7 @@ class SystemApiTests(unittest.TestCase):
     def test_state_summary_after_load_reports_loaded_but_not_ready(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.complementary(spherical_grid())
-        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        system.compute_neighborhood(jump_distance=np.pi / 2)
         system.array_init(np.array([True, False, True], dtype=bool))
         save_path = system.save(test_dir)
 

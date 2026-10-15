@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 def sync_occupancy(system: System):
     if system.current_spins is None:
         raise RuntimeError("Cannot build occupancy lists before initialization.")
-    system.sync_occupancy_from_spins()
+    system._sync_occupancy_from_spins()
 
 
 def init_system(system: System):

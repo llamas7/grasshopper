@@ -236,7 +236,7 @@ def _clone_replica(system: "System") -> "System":
     replica.best_spins = system.current_spins.copy()
     replica.current_energy = float(system.current_energy)
     replica.best_energy = float(system.current_energy)
-    replica.set_occupancy(system.occupancy)
+    replica._set_occupancy(system.occupancy)
     return replica
 
 
@@ -384,7 +384,7 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
 def _apply_sweep_result(replica: "System", result: _ReplicaSweepResult) -> None:
     replica.current_spins = result.current_spins
     replica.current_energy = float(result.current_energy)
-    replica.set_occupancy(result.occupancy)
+    replica._set_occupancy(result.occupancy)
 
 
 def _accept_exchange(
@@ -403,7 +403,7 @@ def _accept_exchange(
 def _copy_replica_state(source: "System", target: "System") -> None:
     target.current_spins = source.current_spins.copy()
     target.current_energy = float(source.current_energy)
-    target.set_occupancy(source.occupancy)
+    target._set_occupancy(source.occupancy)
 
 
 def _set_best(system: "System", best_spins: np.ndarray, best_energy: float) -> None:

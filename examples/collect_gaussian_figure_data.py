@@ -485,7 +485,7 @@ def build_system(
         jump_distance=case.jump_distance,
         kernel=kernel,
         distance_metric="euclidean",
-        silent=not args.verbose,
+        verbose=args.verbose,
     )
     return system, shape
 

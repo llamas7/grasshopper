@@ -47,7 +47,6 @@ def build_system(args: argparse.Namespace, kernel: gh.KernelSpec) -> gh.System:
         jump_distance=args.jump_distance,
         kernel=kernel,
         distance_metric="euclidean",
-        silent=True,
     )
     return system
 

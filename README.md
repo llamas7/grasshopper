@@ -426,8 +426,8 @@ Depending on the system family, you can initialize with:
 - `random_init(seed=...)`
 - `ball_init(radius)` for Euclidean grids
 - `hemisphere_init(seed=...)` for spherical systems
-- `tri_cog_init(num_cogs=..., cog_height=...)`
-- `cos_cog_init(num_cogs=..., cog_height=...)`
+- `triangle_cogwheel_init(num_cogs=..., cog_height=...)`
+- `cosine_cogwheel_init(num_cogs=..., cog_height=...)`
 - `array_init(spin_array)`
 
 For a Euclidean ball, specify the radius in cell lengths:
@@ -739,7 +739,7 @@ system.compute_neighborhood(jump_distance=0.30)
 system.plot_neighbors(selected_site=42)
 
 system.random_init(seed=123)
-system.plot(plot_current=True, show_edges=True)
+system.plot(state="current", show_edges=True)
 ```
 
 Euclidean system plots use Matplotlib and return a Matplotlib `Figure` when

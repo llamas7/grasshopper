@@ -12,7 +12,7 @@ from tests.helpers import assert_fixed_density_consistent, exact_energy, spheric
 class BallInitializationTests(unittest.TestCase):
     def test_square_ball_includes_boundary_and_rescales_density(self):
         system = gh.System.square_lattice(9, 9, num_spins=20)
-        system.compute_neighborhood(0.3, silent=True)
+        system.compute_neighborhood(0.3)
         system.random_init(seed=1)
         system.greedy(max_steps=1)
         grid = system.grid.copy()
@@ -45,7 +45,7 @@ class BallInitializationTests(unittest.TestCase):
 
     def test_same_count_reuses_graph_and_ties_choose_first_site(self):
         system = gh.System.square_lattice(4, 4, num_spins=5)
-        system.compute_neighborhood(0.3, silent=True)
+        system.compute_neighborhood(0.3)
         grid, graph = system.grid, system.neighborhood
         system.ball_init(1)
         # Four center candidates tie; row-major site 5 is selected.
@@ -61,14 +61,14 @@ class BallInitializationTests(unittest.TestCase):
                 axes = np.meshgrid(*([np.arange(5)] * dimension), indexing="ij")
                 grid = np.column_stack([axis.ravel() for axis in axes]).astype(float)
                 system = gh.System.euclidean(grid, num_spins=2)
-                system.compute_neighborhood(0.4, silent=True)
+                system.compute_neighborhood(0.4)
                 system.ball_init(1)
                 self.assertEqual(system.num_spins, expected_count)
                 assert_fixed_density_consistent(self, system)
 
     def test_irregular_disk_uses_a_site_as_center_and_accepts_fractional_radius(self):
         system = gh.System.fibonacci_lattice(100, num_spins=40, origin=(3, -2))
-        system.compute_neighborhood(0.3, silent=True)
+        system.compute_neighborhood(0.3)
         grid = system.grid.copy()
         center = (grid.min(axis=0) + grid.max(axis=0)) / 2
         center_index = np.argmin(np.linalg.norm(grid - center, axis=1))
@@ -82,7 +82,7 @@ class BallInitializationTests(unittest.TestCase):
         system = gh.System.square_lattice(5, 5, num_spins=10)
         with self.assertRaisesRegex(RuntimeError, "Neighborhood"):
             system.ball_init(1)
-        system.compute_neighborhood(0.3, silent=True)
+        system.compute_neighborhood(0.3)
         grid, graph = system.grid, system.neighborhood
         for radius in (-1, np.nan, np.inf, 100):
             with self.subTest(radius=radius), self.assertRaises(ValueError):
@@ -100,9 +100,9 @@ class BallInitializationTests(unittest.TestCase):
 
     def test_failed_rebuild_preserves_previous_state(self):
         system = gh.System.square_lattice(7, 7, num_spins=20)
-        system.compute_neighborhood(0.3, silent=True)
+        system.compute_neighborhood(0.3)
         system.random_init(seed=1)
-        state = system.snapshot_state()
+        state = system._snapshot_state()
         grid, graph = system.grid, system.neighborhood
         with mock.patch("grasshopper.system.build_euclidean_neighborhood", side_effect=RuntimeError("failed")):
             with self.assertRaisesRegex(RuntimeError, "failed"):
