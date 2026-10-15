@@ -593,7 +593,7 @@ system.load("output/run.nc")
 
 If you pass a path with no suffix, the library treats it as a directory and writes `system_state.nc` inside it.
 `save()` returns the path written; `load()` mutates the existing system and
-returns `None`.
+returns it, so `System.euclidean(grid, num_spins=k).load(path)` works.
 
 Important persistence note:
 
