@@ -496,30 +496,6 @@ class ProbabilityTests(unittest.TestCase):
         self.assertEqual(loaded.radial_bounds, (0.0, 4.0))
         self.assertTrue(np.isfinite(loaded.current_probability))
 
-    def test_gpu_compact_kernels_match_cpu_when_cupy_is_available(self) -> None:
-        import grasshopper.build_neighbors_gpu as gpu
-
-        if gpu.cp is None:
-            self.skipTest("CuPy is not installed.")
-        errors = np.linspace(0.0, 2.5, 101)
-        for cpu_kernel, gpu_kernel in (
-            (cosine_kernel, gpu.cosine_kernel_gpu),
-            (cell_averaged_hat_kernel, gpu.cell_averaged_hat_kernel_gpu),
-            (
-                cell_averaged_cosine_kernel,
-                gpu.cell_averaged_cosine_kernel_gpu,
-            ),
-        ):
-            cpu_weights, cpu_mask = cpu_kernel(errors, 1.0)
-            gpu_weights, gpu_mask = gpu_kernel(gpu.cp.asarray(errors), 1.0)
-            np.testing.assert_array_equal(gpu.cp.asnumpy(gpu_mask), cpu_mask)
-            np.testing.assert_allclose(
-                gpu.cp.asnumpy(gpu_weights)[cpu_mask],
-                cpu_weights,
-                atol=1e-12,
-                rtol=1e-12,
-            )
-
     def test_spherical_shell_measure_matches_geodesic_circumference(self) -> None:
         self.assertAlmostEqual(spherical_shell_measure(np.pi / 2), 2.0 * np.pi)
         self.assertEqual(spherical_shell_measure(-0.1), 0.0)

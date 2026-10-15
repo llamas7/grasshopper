@@ -125,15 +125,6 @@ OCCUPANCY_ENGINE = Engine(
     best_update=na_best_update,
 )
 
-NONANTIPODAL_ENGINE = Engine(
-    mode="non-antipodal",
-    energy=OCCUPANCY_ENGINE.energy,
-    grid_gen=OCCUPANCY_ENGINE.grid_gen,
-    update=OCCUPANCY_ENGINE.update,
-    suggest=OCCUPANCY_ENGINE.suggest,
-    best_update=OCCUPANCY_ENGINE.best_update,
-)
-
 ENGINE_BY_CONFIG_KEY = {
     (
         ConstraintModel.ANTIPODAL,

@@ -43,8 +43,6 @@ If you prefer using the repository requirements file:
 pip install -r requirements.txt
 ```
 
-Optional GPU neighborhood helpers require a CUDA-matched CuPy build. The default library path is CPU-based.
-
 ## Package layout
 
 - [`grasshopper/`](grasshopper/) - installable library package
@@ -787,6 +785,3 @@ python -m unittest discover -s tests -v
 ## Acceleration notes
 
 - Numba acceleration is used automatically when available.
-- GPU neighborhood helpers live in
-  [`grasshopper/build_neighbors_gpu.py`](grasshopper/build_neighbors_gpu.py).
-- GPU support is optional and requires installing a CuPy build that matches your CUDA setup.

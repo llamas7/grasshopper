@@ -1,5 +1,5 @@
 from __future__ import annotations
-from .core import NonAntipodalNeighborhood, NonAntipodalNeighborhoodCSR
+from .core import NonAntipodalNeighborhoodCSR
 import numpy as np
 from numpy.typing import NDArray
 from typing import TYPE_CHECKING
@@ -8,112 +8,12 @@ if TYPE_CHECKING:
     from .system import System
 
 
-def calculate_non_antipodal_available_weight(
-        system_states: NDArray[np.bool_],
-        neighborhood: list[NonAntipodalNeighborhood] | NonAntipodalNeighborhoodCSR,
-):
-    if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
-        return float(0.5 * np.sum(neighborhood.total_weight[system_states]))
-    available_weight = 0
-    for i, spin_neighbors in enumerate(neighborhood):
-        if system_states[i]:
-            available_weight += spin_neighbors.total_weight
-    return available_weight / 2
-
-
-def calculate_non_antipodal_system_probability(
-        system_states: NDArray[np.bool_],
-        neighborhood: list[NonAntipodalNeighborhood] | NonAntipodalNeighborhoodCSR,
-):
-    available_weight = calculate_non_antipodal_available_weight(
-        system_states, neighborhood
-    )
-    total_energy = calculate_non_antipodal_system_energy(system_states, neighborhood)
-    if available_weight == 0:
-        raise ZeroDivisionError(
-            "Cannot calculate non-antipodal probability with zero available weight."
-        )
-    return total_energy / available_weight
-
-
-# def calculate_non_antipodal_spin_energy(
-#     system_states: NDArray[np.bool_], neighbors: NonAntipodalNeighborhood
-# ):
-#     neighbor_spins = neighbors.neighbor_spins
-#     contributions = neighbors.contributions
-#     occupied_bool = system_states[neighbor_spins] != 0
-#     spin_energy = np.sum(contributions[occupied_bool])
-#     return spin_energy
-
-
-# def calculate_non_antipodal_system_energy(
-#     system_states: NDArray[np.bool_], neighborhood: list[NonAntipodalNeighborhood]
-# ):
-#     total_energy = 0
-#     for i in range(len(neighborhood)):
-#         if system_states[i]:
-#             total_energy += calculate_non_antipodal_spin_energy(
-#                 system_states, neighborhood[i]
-#             )
-#     return total_energy / 2
-
-
-def calculate_non_antipodal_spin_energy(
-        system_states: NDArray[np.bool_],
-        neighbors: NonAntipodalNeighborhood,
-) -> float:
-    idx = neighbors.neighbor_spins  # int indices
-    mask = system_states[idx]  # bool mask (no "!= 0")
-    # Sum only where mask is True, without allocating contributions[mask]
-    return float(neighbors.contributions.sum(where=mask, initial=0.0))
-
-
 def calculate_non_antipodal_system_energy(
         system_states: NDArray[np.bool_],
-        neighborhood: list[NonAntipodalNeighborhood] | NonAntipodalNeighborhoodCSR,
+        neighborhood: NonAntipodalNeighborhoodCSR,
 ) -> float:
-    if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
-        row_sums = _csr_row_energies(system_states, neighborhood)
-        return float(0.5 * np.sum(row_sums[system_states[: len(neighborhood)]]))
-
-    # number of spins/sites
-    n = len(neighborhood)
-
-    # Build CSR-like structure: flat neighbor indices & contributions + row pointers
-    lengths = np.fromiter(
-        (len(nb.neighbor_spins) for nb in neighborhood), count=n, dtype=np.int64
-    )
-    indptr = np.empty(n + 1, dtype=np.int64)
-    indptr[0] = 0
-    np.cumsum(lengths, out=indptr[1:])
-
-    neighbors_flat = (
-        np.concatenate([nb.neighbor_spins for nb in neighborhood])
-        if indptr[-1] > 0
-        else np.array([], dtype=np.int64)
-    )
-    contribs_flat = (
-        np.concatenate([nb.contributions for nb in neighborhood])
-        if indptr[-1] > 0
-        else np.array([], dtype=np.float64)
-    )
-
-    # Occupancy of all neighbor edges in one shot (no Python loop)
-    occupied_flat = system_states[neighbors_flat]  # bool array
-    weighted = contribs_flat * occupied_flat  # 0 where neighbor unoccupied
-
-    # Sum per row (per site i). Empty rows are common in sparse Euclidean
-    # neighborhoods, and np.add.reduceat cannot start from an empty slice.
-    row_sums = np.zeros(n, dtype=np.float64)
-    nonempty_rows = lengths > 0
-    if indptr[-1] > 0:
-        row_sums[nonempty_rows] = np.add.reduceat(
-            weighted, indptr[:-1][nonempty_rows]
-        )
-
-    # Original code only adds rows where system_states[i] is True, then halves for double counting
-    total_energy = 0.5 * np.sum(row_sums[system_states[:n]])
-    return float(total_energy)
+    row_sums = _csr_row_energies(system_states, neighborhood)
+    return float(0.5 * np.sum(row_sums[system_states[: len(neighborhood)]]))
 
 
 def _csr_row_energies(
@@ -137,16 +37,9 @@ def _csr_row_energies(
 
 def generate_non_antipodal_energy_grid(
         system_states: NDArray[np.bool_],
-        neighborhood: list[NonAntipodalNeighborhood] | NonAntipodalNeighborhoodCSR,
+        neighborhood: NonAntipodalNeighborhoodCSR,
 ):
-    if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
-        return _csr_row_energies(system_states, neighborhood)
-    energy_grid = np.zeros(len(system_states))
-    for i, spin_neighbors in enumerate(neighborhood):
-        energy_grid[i] = calculate_non_antipodal_spin_energy(
-            system_states, spin_neighbors
-        )
-    return energy_grid
+    return _csr_row_energies(system_states, neighborhood)
 
 
 def resolve_non_antipodal_update(system: "System", update: tuple[int, int]) -> tuple[int, int]:
@@ -182,51 +75,27 @@ def resolve_non_antipodal_update(system: "System", update: tuple[int, int]) -> t
 
 
 def get_non_antipodal_pair_contribution(
-        neighborhood: list[NonAntipodalNeighborhood] | NonAntipodalNeighborhoodCSR,
+        neighborhood: NonAntipodalNeighborhoodCSR,
         source_spin: int,
         target_spin: int,
 ) -> float:
     """Return the source->target contribution only if the two sites interact."""
     target_spin = int(target_spin)
-    if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
-        source_spin = int(source_spin)
-        if source_spin < 0:
-            source_spin += len(neighborhood)
-        if source_spin < 0 or source_spin >= len(neighborhood):
-            raise IndexError(source_spin)
-        start = int(neighborhood.indptr[source_spin])
-        stop = int(neighborhood.indptr[source_spin + 1])
-        neighbor_spins = neighborhood.neighbor_spins[start:stop]
-        if neighbor_spins.size == 0:
-            return 0.0
-        left = int(np.searchsorted(neighbor_spins, target_spin, side="left"))
-        if left == neighbor_spins.size or int(neighbor_spins[left]) != target_spin:
-            return 0.0
-        right = int(np.searchsorted(neighbor_spins, target_spin, side="right"))
-        return float(neighborhood.contributions[start + left:start + right].sum())
-
-    neighbors = neighborhood[source_spin]
-    if (
-            neighbors.neighbor_spins.size > 1
-            and np.all(neighbors.neighbor_spins[:-1] <= neighbors.neighbor_spins[1:])
-    ):
-        left = int(
-            np.searchsorted(neighbors.neighbor_spins, target_spin, side="left")
-        )
-        if (
-                left == neighbors.neighbor_spins.size
-                or int(neighbors.neighbor_spins[left]) != target_spin
-        ):
-            return 0.0
-        right = int(
-            np.searchsorted(neighbors.neighbor_spins, target_spin, side="right")
-        )
-        return float(neighbors.contributions[left:right].sum())
-
-    matching_indices = np.flatnonzero(neighbors.neighbor_spins == target_spin)
-    if matching_indices.size == 0:
+    source_spin = int(source_spin)
+    if source_spin < 0:
+        source_spin += len(neighborhood)
+    if source_spin < 0 or source_spin >= len(neighborhood):
+        raise IndexError(source_spin)
+    start = int(neighborhood.indptr[source_spin])
+    stop = int(neighborhood.indptr[source_spin + 1])
+    neighbor_spins = neighborhood.neighbor_spins[start:stop]
+    if neighbor_spins.size == 0:
         return 0.0
-    return float(neighbors.contributions[matching_indices].sum())
+    left = int(np.searchsorted(neighbor_spins, target_spin, side="left"))
+    if left == neighbor_spins.size or int(neighbor_spins[left]) != target_spin:
+        return 0.0
+    right = int(np.searchsorted(neighbor_spins, target_spin, side="right"))
+    return float(neighborhood.contributions[start + left:start + right].sum())
 
 
 def calculate_non_antipodal_move_delta_energy(
