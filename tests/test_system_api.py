@@ -149,7 +149,7 @@ class SystemApiTests(unittest.TestCase):
             ),
         )
 
-        triangular = gh.triangular_lattice(2, 2, spacing=1.0)
+        triangular = gh.triangular_lattice(2, 2, spacing=1.0, compact=False)
         np.testing.assert_allclose(
             triangular,
             np.array(
@@ -1037,7 +1037,7 @@ class SystemApiTests(unittest.TestCase):
 
         attrs = system.to_dataset().attrs
 
-        self.assertEqual(attrs["format_version"], "5.0")
+        self.assertEqual(attrs["format_version"], "6.0")
         self.assertEqual(attrs["geometry"], "euclidean")
         self.assertEqual(attrs["constraint"], "fixed-density")
         self.assertEqual(attrs["interaction_model"], "occupancy")
@@ -1051,6 +1051,10 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(attrs["grid_dtype"], str(system.grid.dtype))
         self.assertIn("jump_distance", attrs)
         self.assertNotIn("prob_prefactor", attrs)
+        self.assertAlmostEqual(
+            attrs["current_probability"], system.current_probability
+        )
+        self.assertAlmostEqual(attrs["best_probability"], system.best_probability)
         self.assertTrue(bool(attrs["neighborhood_built"]))
         self.assertEqual(attrs["neighborhood_storage"], "csr")
         self.assertEqual(attrs["neighborhood_rows"], 4)

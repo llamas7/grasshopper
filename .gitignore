@@ -9,6 +9,7 @@
 !pyproject.toml
 !requirements.txt
 !LICENSE
+!braunstein_caves_sweep.py
 
 # Keep the library package.
 !grasshopper/
@@ -23,6 +24,7 @@
 !examples/_common.py
 !examples/collect_gaussian.py
 !examples/collect_gaussian_figure_data.py
+!examples/collect_healpix_scan.py
 !examples/plot_gaussian_morphology_diagram.py
 !examples/euclidean_2d.py
 !examples/euclidean_3d.py
@@ -30,6 +32,7 @@
 !examples/parallel_tempering.py
 !examples/spherical_complementary.py
 !examples/spherical_independent.py
+!examples/spherical_multi_angle.py
 !examples/spherical_non_antipodal.py
 
 # Ignore generated/cache files even inside unignored directories.

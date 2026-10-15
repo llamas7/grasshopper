@@ -188,6 +188,8 @@ def continuum_probability_prefactor(
     spins: NDArray[np.bool_] | None = None,
 ) -> float:
     """Return the multiplier that converts stored pair energy to probability."""
+    if system.sampling_probabilities is not None:
+        return 2.0 / system.num_spins
     if system.jump_distance is None:
         raise RuntimeError("Neighborhood construction metadata is unavailable.")
     kernel = system.kernel
