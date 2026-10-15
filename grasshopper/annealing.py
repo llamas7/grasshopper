@@ -29,9 +29,9 @@ def acceptance_probability(dE: float, T: float) -> bool:
 
 
 def _require_annealable(system: "System") -> None:
-    if system.current_system is None:
+    if system.current_spins is None:
         raise RuntimeError("System has no current spin state. Initialize it first.")
-    if system.best_system is None:
+    if system.best_spins is None:
         raise RuntimeError("System has no best spin state. Initialize it first.")
     if system.neighborhood is None:
         raise RuntimeError("System has no neighborhood. Call compute_neighborhood() first.")
@@ -52,11 +52,11 @@ def _validate_schedule(
 def _recompute_energy_state(system: "System", engine: Engine) -> np.ndarray:
     """Rebuild the incremental energy grid and exact scalar energies."""
     accelerated_current = compute_spinflip_numba_energy_grid(
-        system.current_system,
+        system.current_spins,
         system.neighborhood,
     )
     accelerated_best = compute_spinflip_numba_energy_grid(
-        system.best_system,
+        system.best_spins,
         system.neighborhood,
     )
     if accelerated_current is not None and accelerated_best is not None:
@@ -66,17 +66,17 @@ def _recompute_energy_state(system: "System", engine: Engine) -> np.ndarray:
         system.best_energy = float(best_energy)
         if system.current_energy > system.best_energy:
             system.best_energy = system.current_energy
-            system.best_system = system.current_system.copy()
+            system.best_spins = system.current_spins.copy()
         return energy_array
 
     grid_gen = engine.grid_gen
     system_energy_fn = engine.energy
-    energy_array = grid_gen(system.current_system, system.neighborhood)
-    system.current_energy = system_energy_fn(system.current_system, system.neighborhood)
-    system.best_energy = system_energy_fn(system.best_system, system.neighborhood)
+    energy_array = grid_gen(system.current_spins, system.neighborhood)
+    system.current_energy = system_energy_fn(system.current_spins, system.neighborhood)
+    system.best_energy = system_energy_fn(system.best_spins, system.neighborhood)
     if system.current_energy > system.best_energy:
         system.best_energy = system.current_energy
-        system.best_system = system.current_system.copy()
+        system.best_spins = system.current_spins.copy()
     return energy_array
 
 
@@ -95,7 +95,7 @@ def metropolis_sweep(
     system : System
         Current system object, modified in-place.
     energy_array : np.ndarray
-        Energy grid associated with current_system; modified in-place.
+        Energy grid associated with current_spins; modified in-place.
     T : float
         Temperature for this sweep.
     n_steps : int
@@ -103,7 +103,7 @@ def metropolis_sweep(
     engine : Engine
         Engine for this system configuration.
     track_best : bool, optional
-        If True, updates system.best_system / best_energy.
+        If True, updates system.best_spins / best_energy.
 
     Returns
     -------
@@ -150,7 +150,7 @@ def metropolis_sweep(
         system.current_energy += dE
         if track_best and system.current_energy > system.best_energy:
             system.best_energy = system.current_energy
-            system.best_system = system.current_system.copy()
+            system.best_spins = system.current_spins.copy()
 
     return accepted / n_steps
 
@@ -214,13 +214,13 @@ def thermalize_system(
 
         # Ensure energy_array matches current configuration
         accelerated_energy = compute_spinflip_numba_energy_grid(
-            system.current_system,
+            system.current_spins,
             system.neighborhood,
         )
         energy_array = (
             accelerated_energy[0]
             if accelerated_energy is not None
-            else grid_gen(system.current_system, system.neighborhood)
+            else grid_gen(system.current_spins, system.neighborhood)
         )
 
         # Clamp range for safety
@@ -303,18 +303,18 @@ def simulated_annealing(
         engine = get_engine(system.kind)
         grid_gen = engine.grid_gen
 
-        # Build initial energy grid consistent with current_system
+        # Build initial energy grid consistent with current_spins
         if reinit:
             energy_array = _recompute_energy_state(system, engine)
         else:
             accelerated_energy = compute_spinflip_numba_energy_grid(
-                system.current_system,
+                system.current_spins,
                 system.neighborhood,
             )
             energy_array = (
                 accelerated_energy[0]
                 if accelerated_energy is not None
-                else grid_gen(system.current_system, system.neighborhood)
+                else grid_gen(system.current_spins, system.neighborhood)
             )
 
         start_time = time.time()

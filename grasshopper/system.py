@@ -56,7 +56,7 @@ class System:
     ``greedy()``, or ``parallel_temper()``. ``thermalize()`` can first tune the
     temperature. Setup methods return the system so they can be chained.
 
-    ``current_system`` and ``best_system`` hold the spin arrays. Energies are
+    ``current_spins`` and ``best_spins`` hold the spin arrays. Energies are
     unnormalized; use ``current_probability`` and ``best_probability`` for
     normalized Grasshopper values. Optimization histories are available as
     ``anneal_data``, ``greedy_history``, and ``parallel_tempering_history``.
@@ -108,9 +108,9 @@ class System:
         self._radial_bounds = None
         self._neighborhood = None
         self._initialized = False
-        self._current_system = None
+        self._current_spins = None
         self._current_energy = 0.0
-        self._best_system = None
+        self._best_spins = None
         self._best_energy = 0.0
         self._occupancy = None
         self._temperature = AnnealSchedule().starting_temp
@@ -391,12 +391,12 @@ class System:
         return len(self.grid)
 
     @property
-    def current_system(self) -> NDArray[np.bool_] | None:
-        return self._current_system
+    def current_spins(self) -> NDArray[np.bool_] | None:
+        return self._current_spins
 
-    @current_system.setter
-    def current_system(self, value: NDArray[np.bool_] | None) -> None:
-        self._current_system = value
+    @current_spins.setter
+    def current_spins(self, value: NDArray[np.bool_] | None) -> None:
+        self._current_spins = value
         self._forget_stored_probabilities("current")
 
     @property
@@ -409,12 +409,12 @@ class System:
         self._forget_stored_probabilities("current")
 
     @property
-    def best_system(self) -> NDArray[np.bool_] | None:
-        return self._best_system
+    def best_spins(self) -> NDArray[np.bool_] | None:
+        return self._best_spins
 
-    @best_system.setter
-    def best_system(self, value: NDArray[np.bool_] | None) -> None:
-        self._best_system = value
+    @best_spins.setter
+    def best_spins(self, value: NDArray[np.bool_] | None) -> None:
+        self._best_spins = value
         self._forget_stored_probabilities("best")
 
     @property
@@ -472,8 +472,8 @@ class System:
     def state_summary(self) -> dict[str, object]:
         """Return a compact snapshot of system configuration and readiness."""
         neighborhood_built = self.neighborhood is not None
-        has_current_system = self.current_system is not None
-        has_best_system = self.best_system is not None
+        has_current_spins = self.current_spins is not None
+        has_best_spins = self.best_spins is not None
         kernel = self.kernel
         metric = self.distance_metric
         kernel_summary = (
@@ -494,8 +494,8 @@ class System:
             "system_shape": self.system_shape,
             "neighborhood_built": neighborhood_built,
             "initialized": bool(self.initialized),
-            "has_current_system": has_current_system,
-            "has_best_system": has_best_system,
+            "has_current_spins": has_current_spins,
+            "has_best_spins": has_best_spins,
             "ready": neighborhood_built and bool(self.initialized),
             "jump_distance": self.jump_distance,
             "jump_weights": self.jump_weights,
@@ -647,10 +647,10 @@ class System:
         self._stored_probabilities.clear()
         self._stored_angle_probabilities.clear()
         self._refresh_energies_after_neighborhood_build()
-        if self.current_system is not None and (
-            self.best_system is None or self.current_energy > self.best_energy
+        if self.current_spins is not None and (
+            self.best_spins is None or self.current_energy > self.best_energy
         ):
-            self.best_system = self.current_system.copy()
+            self.best_spins = self.current_spins.copy()
             self.best_energy = self.current_energy
         return self
 
@@ -659,12 +659,12 @@ class System:
         from .anticorrelation import component_probabilities
         if self.sampling_probabilities is None:
             raise RuntimeError("Build an anticorrelation objective first.")
-        state = "current" if spins is None or spins is self.current_system else (
-            "best" if spins is self.best_system else None
+        state = "current" if spins is None or spins is self.current_spins else (
+            "best" if spins is self.best_spins else None
         )
         if self.neighborhood is None and state in self._stored_angle_probabilities:
             return np.array(self._stored_angle_probabilities[state], copy=True)
-        return component_probabilities(self, self.current_system if spins is None else spins)
+        return component_probabilities(self, self.current_spins if spins is None else spins)
 
     def clone(self) -> "System":
         """Copy spins and histories while sharing the grid and neighborhood."""
@@ -673,8 +673,8 @@ class System:
         clone._stored_probabilities = self._stored_probabilities.copy()
         clone._stored_angle_probabilities = {k: tuple(v) for k, v in self._stored_angle_probabilities.items()}
         state = self.snapshot_state()
-        clone._current_system = state.current_system
-        clone._best_system = state.best_system
+        clone._current_spins = state.current_spins
+        clone._best_spins = state.best_spins
         clone._occupancy = state.occupancy
         clone._anneal_data = self.anneal_data.copy()
         clone._greedy_history = self.greedy_history.copy()
@@ -689,11 +689,11 @@ class System:
         self._occupancy = None if occupancy is None else occupancy.copy()
 
     def sync_occupancy_from_spins(self) -> None:
-        """Rebuild occupied/unoccupied lists from current_system."""
-        if self.current_system is None:
+        """Rebuild occupied/unoccupied lists from current_spins."""
+        if self.current_spins is None:
             self.set_occupancy(None)
             return
-        occupancy = OccupancyState.from_spin_array(self.current_system)
+        occupancy = OccupancyState.from_spin_array(self.current_spins)
         if (
             self.kind is SystemKind.EUCLIDEAN
             and occupancy.occupied.size != self.num_spins
@@ -706,9 +706,9 @@ class System:
     def snapshot_state(self) -> SystemState:
         """Return a detached copy of mutable spin state."""
         return SystemState(
-            current_system=self.current_system,
+            current_spins=self.current_spins,
             current_energy=self.current_energy,
-            best_system=self.best_system,
+            best_spins=self.best_spins,
             best_energy=self.best_energy,
             occupancy=self.occupancy,
         ).copy()
@@ -716,9 +716,9 @@ class System:
     def restore_state(self, state: SystemState) -> None:
         """Restore mutable spin state from a snapshot."""
         state = state.copy()
-        self.current_system = state.current_system
+        self.current_spins = state.current_spins
         self.current_energy = state.current_energy
-        self.best_system = state.best_system
+        self.best_spins = state.best_spins
         self.best_energy = state.best_energy
         self._occupancy = state.occupancy
 
@@ -769,8 +769,8 @@ class System:
             self.grid * (self.num_spins / occupied) ** (1.0 / self.dimension)
         )
         trial._num_spins = occupied
-        trial.current_system = None
-        trial.best_system = None
+        trial.current_spins = None
+        trial.best_spins = None
         trial._anneal_data = AnnealData()
         trial._greedy_history = GreedyHistory()
         trial._parallel_tempering_history = ParallelTemperingHistory()
@@ -989,7 +989,7 @@ class System:
         plot_figure: bool = True,
     ):
         """Plot the best (or current) spin state; returns the figure if not shown."""
-        system_to_plot = self.current_system if plot_current else self.best_system
+        system_to_plot = self.current_spins if plot_current else self.best_spins
         if system_to_plot is None and self.kind is not SystemKind.EUCLIDEAN:
             self._require_init()
         voronoi_padding_distance = None
@@ -1065,7 +1065,7 @@ class System:
             raise ValueError(
                 "Boundary plotting is only implemented for spherical grids."
             )
-        system_to_plot = self.current_system if plot_current else self.best_system
+        system_to_plot = self.current_spins if plot_current else self.best_spins
         independent = self.kind is SystemKind.INDEPENDENT
         return graph_boundary(
             grid=self.grid,
@@ -1091,10 +1091,10 @@ class System:
         spin_dims, spin_coords = self._spin_dims_and_coords()
         coords.update(spin_coords)
 
-        if self.current_system is not None:
-            data_vars["current_system"] = (spin_dims, self.current_system)
-        if self.best_system is not None:
-            data_vars["best_system"] = (spin_dims, self.best_system)
+        if self.current_spins is not None:
+            data_vars["current_spins"] = (spin_dims, self.current_spins)
+        if self.best_spins is not None:
+            data_vars["best_spins"] = (spin_dims, self.best_spins)
 
         ds = xr.Dataset(data_vars=data_vars, coords=coords)
 
@@ -1136,7 +1136,7 @@ class System:
             attrs["objective_normalization"] = "energy=num_spins*score/2"
             attrs["sampling_probabilities_json"] = json.dumps(self.sampling_probabilities)
             for state in ("current", "best"):
-                spins = getattr(self, f"{state}_system")
+                spins = getattr(self, f"{state}_spins")
                 if spins is not None:
                     attrs[f"{state}_angle_probabilities_json"] = json.dumps(
                         self.angle_probabilities(spins).tolist()
@@ -1288,10 +1288,12 @@ class System:
             (self.system_shape,) if isinstance(self.system_shape, int) else self.system_shape
         )
         for state in ("current", "best"):
-            name = f"{state}_system"
+            name = f"{state}_spins"
+            # Format 6.0 and earlier named these variables "<state>_system".
+            stored_name = name if name in ds else f"{state}_system"
             spins = None
-            if name in ds:
-                spins = np.ascontiguousarray(ds[name].values, dtype=np.bool_)
+            if stored_name in ds:
+                spins = np.ascontiguousarray(ds[stored_name].values, dtype=np.bool_)
                 if spins.shape != expected_shape:
                     raise ValueError(
                         f"Saved {name} has shape {spins.shape}, expected {expected_shape}."
@@ -1311,7 +1313,7 @@ class System:
                 if value is not None:
                     self._stored_probabilities[key] = value
 
-        if not self.antipodal and self.current_system is not None:
+        if not self.antipodal and self.current_spins is not None:
             self.sync_occupancy_from_spins()
         else:
             self.set_occupancy(None)
@@ -1320,7 +1322,7 @@ class System:
         self._neighborhood = None
 
         # If no spin state is present, mark uninitialized.
-        if self.current_system is None and self.best_system is None:
+        if self.current_spins is None and self.best_spins is None:
             self._initialized = False
 
         self._sampling_probabilities = None
@@ -1631,10 +1633,10 @@ class System:
         if self.neighborhood is None:
             return
         energy = get_engine(self.kind).energy
-        if self.current_system is not None:
-            self.current_energy = energy(self.current_system, self.neighborhood)
-        if self.best_system is not None:
-            self.best_energy = energy(self.best_system, self.neighborhood)
+        if self.current_spins is not None:
+            self.current_energy = energy(self.current_spins, self.neighborhood)
+        if self.best_spins is not None:
+            self.best_energy = energy(self.best_spins, self.neighborhood)
 
     def _require_neighborhood(self) -> None:
         if self.neighborhood is None:
@@ -1801,7 +1803,7 @@ class System:
         """Save both normalizations, or explain why a value is undefined."""
         attrs: dict[str, float | str] = {}
         for state in ("current", "best"):
-            spins = getattr(self, f"{state}_system")
+            spins = getattr(self, f"{state}_spins")
             if spins is None:
                 continue
             for mode, suffix in (("continuum", "probability"), ("graph", "graph_probability")):
@@ -1831,7 +1833,7 @@ class System:
         mode = str(normalization).lower().replace("_", "-")
         if mode not in ("continuum", "graph"):
             raise ValueError("normalization must be either 'continuum' or 'graph'.")
-        spins = getattr(self, f"{state}_system")
+        spins = getattr(self, f"{state}_spins")
         if spins is None:
             raise RuntimeError(f"System has no {state} spin configuration.")
         suffix = "probability" if mode == "continuum" else "graph_probability"

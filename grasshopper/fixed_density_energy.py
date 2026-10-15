@@ -63,7 +63,7 @@ def resolve_fixed_density_update(system: "System", update: tuple[int, int]) -> t
             f"{len(occupancy.unoccupied)} unoccupied sites."
         ) from exc
 
-    system_states = system.current_system
+    system_states = system.current_spins
     if system_states is None:
         raise RuntimeError("System has no current spin state.")
     if not bool(system_states[spin_up]):
@@ -124,7 +124,7 @@ def update_fixed_density_energy_grid(
 ):
     up_idx, down_idx = update
     spin_up, spin_down = resolve_fixed_density_update(system, update)
-    system_states = system.current_system
+    system_states = system.current_spins
     neighborhood = system.neighborhood
     system_states[spin_up] = not system_states[spin_up]
     system_states[spin_down] = not system_states[spin_down]

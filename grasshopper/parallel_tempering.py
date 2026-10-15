@@ -60,16 +60,16 @@ class _WorkerSystem:
     neighborhood: Any
     num_spins: int
     antipodal: bool
-    current_system: np.ndarray
+    current_spins: np.ndarray
     current_energy: float
-    best_system: np.ndarray
+    best_spins: np.ndarray
     best_energy: float
     occupancy: OccupancyState | None
 
 
 @dataclass(frozen=True)
 class _ReplicaTask:
-    current_system: np.ndarray
+    current_spins: np.ndarray
     current_energy: float
     occupancy: OccupancyState | None
     energy_grid: np.ndarray
@@ -81,7 +81,7 @@ class _ReplicaTask:
 
 @dataclass(frozen=True)
 class _ReplicaSweepResult:
-    current_system: np.ndarray
+    current_spins: np.ndarray
     current_energy: float
     occupancy: OccupancyState | None
     energy_grid: np.ndarray
@@ -193,9 +193,9 @@ def _init_worker_context(
 
 
 def _require_parallel_tempering_ready(system: "System") -> None:
-    if system.current_system is None:
+    if system.current_spins is None:
         raise RuntimeError("System has no current spin state. Initialize it first.")
-    if system.best_system is None:
+    if system.best_spins is None:
         raise RuntimeError("System has no best spin state. Initialize it first.")
     if system.neighborhood is None:
         raise RuntimeError("System has no neighborhood. Call compute_neighborhood() first.")
@@ -232,8 +232,8 @@ def _temperature_ladder(
 
 def _clone_replica(system: "System") -> "System":
     replica = system.clone()
-    replica.current_system = system.current_system.copy()
-    replica.best_system = system.current_system.copy()
+    replica.current_spins = system.current_spins.copy()
+    replica.best_spins = system.current_spins.copy()
     replica.current_energy = float(system.current_energy)
     replica.best_energy = float(system.current_energy)
     replica.set_occupancy(system.occupancy)
@@ -268,9 +268,9 @@ def _make_replicas(
     system_energy_fn = engine.energy
     for replica in replicas:
         replica.current_energy = float(
-            system_energy_fn(replica.current_system, replica.neighborhood)
+            system_energy_fn(replica.current_spins, replica.neighborhood)
         )
-        replica.best_system = replica.current_system.copy()
+        replica.best_spins = replica.current_spins.copy()
         replica.best_energy = replica.current_energy
         if not replica.antipodal:
             sync_occupancy(replica)
@@ -279,16 +279,16 @@ def _make_replicas(
 
 def _recompute_replica(replica: "System", engine: Engine) -> np.ndarray:
     accelerated = compute_spinflip_numba_energy_grid(
-        replica.current_system,
+        replica.current_spins,
         replica.neighborhood,
     )
     if accelerated is not None:
         energy_grid, current_energy = accelerated
         replica.current_energy = float(current_energy)
     else:
-        energy_grid = engine.grid_gen(replica.current_system, replica.neighborhood)
+        energy_grid = engine.grid_gen(replica.current_spins, replica.neighborhood)
         replica.current_energy = float(
-            engine.energy(replica.current_system, replica.neighborhood)
+            engine.energy(replica.current_spins, replica.neighborhood)
         )
     if not replica.antipodal:
         sync_occupancy(replica)
@@ -296,7 +296,7 @@ def _recompute_replica(replica: "System", engine: Engine) -> np.ndarray:
 
 
 def _sync_worker_occupancy(system: _WorkerSystem) -> None:
-    system.occupancy = OccupancyState.from_spin_array(system.current_system)
+    system.occupancy = OccupancyState.from_spin_array(system.current_spins)
 
 
 def _make_worker_task(
@@ -308,7 +308,7 @@ def _make_worker_task(
         seed: Seed,
 ) -> _ReplicaTask:
     return _ReplicaTask(
-        current_system=replica.current_system,
+        current_spins=replica.current_spins,
         current_energy=float(replica.current_energy),
         occupancy=None if replica.occupancy is None else replica.occupancy.copy(),
         energy_grid=energy_grid,
@@ -340,9 +340,9 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
         neighborhood=_WORKER_CONTEXT["neighborhood"],
         num_spins=_WORKER_CONTEXT["num_spins"],
         antipodal=_WORKER_CONTEXT["antipodal"],
-        current_system=task.current_system.copy(),
+        current_spins=task.current_spins.copy(),
         current_energy=float(task.current_energy),
-        best_system=task.current_system.copy(),
+        best_spins=task.current_spins.copy(),
         best_energy=float(task.current_energy),
         occupancy=None if task.occupancy is None else task.occupancy.copy(),
     )
@@ -358,22 +358,22 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
     )
     if task.reinit:
         accelerated = compute_spinflip_numba_energy_grid(
-            system.current_system,
+            system.current_spins,
             system.neighborhood,
         )
         if accelerated is not None:
             energy_grid, current_energy = accelerated
             system.current_energy = float(current_energy)
         else:
-            energy_grid = engine.grid_gen(system.current_system, system.neighborhood)
+            energy_grid = engine.grid_gen(system.current_spins, system.neighborhood)
             system.current_energy = float(
-                engine.energy(system.current_system, system.neighborhood)
+                engine.energy(system.current_spins, system.neighborhood)
             )
         if not system.antipodal:
             _sync_worker_occupancy(system)
 
     return _ReplicaSweepResult(
-        current_system=system.current_system,
+        current_spins=system.current_spins,
         current_energy=float(system.current_energy),
         occupancy=None if system.occupancy is None else system.occupancy.copy(),
         energy_grid=energy_grid,
@@ -382,7 +382,7 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
 
 
 def _apply_sweep_result(replica: "System", result: _ReplicaSweepResult) -> None:
-    replica.current_system = result.current_system
+    replica.current_spins = result.current_spins
     replica.current_energy = float(result.current_energy)
     replica.set_occupancy(result.occupancy)
 
@@ -401,13 +401,13 @@ def _accept_exchange(
 
 
 def _copy_replica_state(source: "System", target: "System") -> None:
-    target.current_system = source.current_system.copy()
+    target.current_spins = source.current_spins.copy()
     target.current_energy = float(source.current_energy)
     target.set_occupancy(source.occupancy)
 
 
-def _set_best(system: "System", best_system: np.ndarray, best_energy: float) -> None:
-    system.best_system = best_system.copy()
+def _set_best(system: "System", best_spins: np.ndarray, best_energy: float) -> None:
+    system.best_spins = best_spins.copy()
     system.best_energy = float(best_energy)
 
 
@@ -462,11 +462,11 @@ def _parallel_tempering_impl(
     energy_grids = [_recompute_replica(replica, engine) for replica in replicas]
 
     best_energy = float(system.best_energy)
-    best_system = system.best_system.copy()
+    best_spins = system.best_spins.copy()
     for replica in replicas:
         if replica.current_energy > best_energy:
             best_energy = float(replica.current_energy)
-            best_system = replica.current_system.copy()
+            best_spins = replica.current_spins.copy()
 
     sweep_acceptance: list[list[float]] = []
     cold_energy_history: list[float] = []
@@ -511,7 +511,7 @@ def _parallel_tempering_impl(
 
                     if track_best and replica.current_energy > best_energy:
                         best_energy = float(replica.current_energy)
-                        best_system = replica.current_system.copy()
+                        best_spins = replica.current_spins.copy()
             else:
                 tasks = [
                     _make_worker_task(
@@ -532,7 +532,7 @@ def _parallel_tempering_impl(
 
                     if track_best and replicas[idx].current_energy > best_energy:
                         best_energy = float(replicas[idx].current_energy)
-                        best_system = replicas[idx].current_system.copy()
+                        best_spins = replicas[idx].current_spins.copy()
 
             if iteration % exchange_interval == 0:
                 start_pair = iteration % 2
@@ -574,9 +574,9 @@ def _parallel_tempering_impl(
 
     _copy_replica_state(replicas[0], system)
     if track_best and best_energy > system.best_energy:
-        _set_best(system, best_system, best_energy)
-    elif track_best and system.best_system is None:
-        _set_best(system, best_system, best_energy)
+        _set_best(system, best_spins, best_energy)
+    elif track_best and system.best_spins is None:
+        _set_best(system, best_spins, best_energy)
 
     exchange_rates = [
         accepts / attempts if attempts else 0.0

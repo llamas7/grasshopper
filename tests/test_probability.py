@@ -458,9 +458,9 @@ class ProbabilityTests(unittest.TestCase):
             different_density.load(path)
 
         malformed = system.to_dataset()
-        malformed["current_system"] = (("wrong_site",), [True, False, True])
+        malformed["current_spins"] = (("wrong_site",), [True, False, True])
         malformed.to_netcdf(test_dir / "malformed.nc")
-        with self.assertRaisesRegex(ValueError, "current_system has shape"):
+        with self.assertRaisesRegex(ValueError, "current_spins has shape"):
             system.load(test_dir / "malformed.nc")
 
     def test_older_checkpoint_without_probabilities_can_be_rebuilt(self) -> None:

@@ -66,7 +66,7 @@ def update_energy_grid(
         system: System, spin_index: int, energy_grid: NDArray[np.float64]
 ):
     neighbors = system.neighborhood[spin_index]
-    system_states = system.current_system
+    system_states = system.current_spins
     aligned_spins = neighbors.positive_spins
     aligned_contributions = neighbors.positive_contributions
     non_aligned_spins = neighbors.negative_spins

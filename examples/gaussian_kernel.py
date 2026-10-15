@@ -62,7 +62,7 @@ def main(argv: Sequence[str] | None = None) -> tuple[gh.System, gh.System]:
     )
 
     compact.random_init(seed=args.seed)
-    gaussian.array_init(compact.current_system.copy())
+    gaussian.array_init(compact.current_spins.copy())
     optimize(
         compact,
         steps=args.steps,

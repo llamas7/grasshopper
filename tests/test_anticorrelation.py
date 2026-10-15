@@ -33,10 +33,10 @@ class AnticorrelationTests(unittest.TestCase):
                     expected = []
                     for a in angles:
                         if a == 0:
-                            expected.append(np.mean(s.current_system[:, 0] != s.current_system[:, 1]))
+                            expected.append(np.mean(s.current_spins[:, 0] != s.current_spins[:, 1]))
                         else:
                             raw = gh.System.independent(s.grid).compute_neighborhood(a, kernel=kernel)
-                            expected.append(raw.probability(s.current_system))
+                            expected.append(raw.probability(s.current_spins))
                     np.testing.assert_allclose(s.angle_probabilities(), expected, atol=1e-12)
                     self.assertAlmostEqual(s.current_probability, np.dot(q, expected))
                     self.assertAlmostEqual(s.current_energy, s.num_spins/2*np.dot(q, expected))
@@ -62,7 +62,7 @@ class AnticorrelationTests(unittest.TestCase):
                 s.array_init(state.copy())
                 updated = delta.copy()
                 engine.update(s, (i, j), updated)
-                np.testing.assert_array_equal(s.current_system, trial)
+                np.testing.assert_array_equal(s.current_spins, trial)
                 np.testing.assert_allclose(updated, engine.grid_gen(trial, s.neighborhood), atol=1e-12)
         z = self.make_system(angles=[0])
         for opposite, expected in ((False, 0), (True, 1)):
@@ -79,8 +79,8 @@ class AnticorrelationTests(unittest.TestCase):
         s.greedy(max_steps=30)
         s.parallel_temper(num_replicas=3, iterations=3, sweep_steps=30,
                           cold_temp=.1, hot_temp=1, n_workers=1, seed=11)
-        self.assertAlmostEqual(s.current_energy, engine.energy(s.current_system, s.neighborhood))
-        self.assertAlmostEqual(s.best_energy, engine.energy(s.best_system, s.neighborhood))
+        self.assertAlmostEqual(s.current_energy, engine.energy(s.current_spins, s.neighborhood))
+        self.assertAlmostEqual(s.best_energy, engine.energy(s.best_spins, s.neighborhood))
         c = s.clone()
         self.assertEqual(c.sampling_probabilities, s.sampling_probabilities)
         self.assertIs(c.neighborhood, s.neighborhood)
@@ -106,7 +106,7 @@ class AnticorrelationTests(unittest.TestCase):
             loaded.save(Path(td)/"again.nc")
             loaded.load(path, rebuild_neighborhood=True)
             self.assertAlmostEqual(loaded.current_probability, s.current_probability)
-            np.testing.assert_allclose(loaded.angle_probabilities(loaded.best_system), s.angle_probabilities(s.best_system))
+            np.testing.assert_allclose(loaded.angle_probabilities(loaded.best_spins), s.angle_probabilities(s.best_spins))
             raw = gh.System.independent(s.grid).compute_neighborhood(.4).random_init(seed=15)
             for version in ("4.0", "5.0"):
                 ds = raw.to_dataset()
@@ -144,4 +144,4 @@ class AnticorrelationTests(unittest.TestCase):
             loaded.load(output/summary["winning_checkpoint"], rebuild_neighborhood=True)
             self.assertAlmostEqual(loaded.best_probability, summary["best_probability"])
             self.assertAlmostEqual(loaded.best_probability,
-                                   np.dot(summary["probabilities"], loaded.angle_probabilities(loaded.best_system)))
+                                   np.dot(summary["probabilities"], loaded.angle_probabilities(loaded.best_spins)))

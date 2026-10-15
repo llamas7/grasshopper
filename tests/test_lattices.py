@@ -62,14 +62,14 @@ class FibonacciLatticeTests(unittest.TestCase):
         system.compute_neighborhood(0.3, silent=True)
         system.random_init(seed=123)
         system.greedy(max_steps=10, reinit=False)
-        self.assertEqual(np.count_nonzero(system.current_system), 32)
+        self.assertEqual(np.count_nonzero(system.current_spins), 32)
         self.assertTrue(np.isfinite(system.best_probability))
         with TemporaryDirectory() as directory:
             path = system.save(Path(directory) / "fibonacci.nc")
             restored = gh.System.fibonacci_lattice(64)
             restored.load(path, rebuild_neighborhood=True)
             np.testing.assert_array_equal(restored.grid, system.grid)
-            np.testing.assert_array_equal(restored.current_system, system.current_system)
+            np.testing.assert_array_equal(restored.current_spins, system.current_spins)
             self.assertAlmostEqual(restored.best_probability, system.best_probability)
 
 
@@ -139,5 +139,5 @@ class CompactLatticeTests(unittest.TestCase):
                 self.assertEqual(system.num_spins, 50)
                 system.compute_neighborhood(jump_distance=0.2, silent=True)
                 system.random_init(seed=123)
-                self.assertEqual(np.count_nonzero(system.current_system), 50)
+                self.assertEqual(np.count_nonzero(system.current_spins), 50)
                 self.assertTrue(np.isfinite(system.current_probability))

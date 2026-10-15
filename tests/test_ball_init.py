@@ -22,8 +22,8 @@ class BallInitializationTests(unittest.TestCase):
         expected = ((rows - 4) ** 2 + (cols - 4) ** 2 <= 4).ravel()
         self.assertIs(result, system)
         self.assertEqual(system.num_spins, 13)
-        np.testing.assert_array_equal(system.current_system, expected)
-        np.testing.assert_array_equal(system.best_system, expected)
+        np.testing.assert_array_equal(system.current_spins, expected)
+        np.testing.assert_array_equal(system.best_spins, expected)
         np.testing.assert_allclose(system.grid, grid * np.sqrt(20 / 13))
         self.assertIsNot(system.neighborhood, neighborhood)
         self.assertEqual(system.jump_distance, 0.3)
@@ -38,7 +38,7 @@ class BallInitializationTests(unittest.TestCase):
             restored = gh.System.square_lattice(9, 9, num_spins=13)
             restored.load(path, rebuild_neighborhood=True)
             np.testing.assert_allclose(restored.grid, system.grid)
-            np.testing.assert_array_equal(restored.current_system, expected)
+            np.testing.assert_array_equal(restored.current_spins, expected)
             self.assertAlmostEqual(restored.current_probability, system.current_probability)
         system.greedy(max_steps=5)
         assert_fixed_density_consistent(self, system)
@@ -51,7 +51,7 @@ class BallInitializationTests(unittest.TestCase):
         # Four center candidates tie; row-major site 5 is selected.
         expected = np.zeros(16, dtype=bool)
         expected[[1, 4, 5, 6, 9]] = True
-        np.testing.assert_array_equal(system.current_system, expected)
+        np.testing.assert_array_equal(system.current_spins, expected)
         self.assertIs(system.grid, grid)
         self.assertIs(system.neighborhood, graph)
 
@@ -74,8 +74,8 @@ class BallInitializationTests(unittest.TestCase):
         center_index = np.argmin(np.linalg.norm(grid - center, axis=1))
         expected = np.linalg.norm(grid - grid[center_index], axis=1) <= 1.7 / np.sqrt(40)
         system.ball_init(1.7)
-        np.testing.assert_array_equal(system.current_system, expected)
-        self.assertTrue(system.current_system[center_index])
+        np.testing.assert_array_equal(system.current_spins, expected)
+        self.assertTrue(system.current_spins[center_index])
         assert_fixed_density_consistent(self, system)
 
     def test_zero_radius_and_invalid_inputs(self):
@@ -92,7 +92,7 @@ class BallInitializationTests(unittest.TestCase):
             self.assertEqual(system.num_spins, 10)
         system.ball_init(0)
         self.assertEqual(system.num_spins, 1)
-        self.assertTrue(system.current_system[12])
+        self.assertTrue(system.current_spins[12])
         assert_fixed_density_consistent(self, system)
         sphere = gh.System.fixed_density(spherical_grid())
         with self.assertRaisesRegex(ValueError, "Euclidean"):
@@ -110,7 +110,7 @@ class BallInitializationTests(unittest.TestCase):
         self.assertIs(system.grid, grid)
         self.assertIs(system.neighborhood, graph)
         self.assertEqual(system.num_spins, 20)
-        np.testing.assert_array_equal(system.current_system, state.current_system)
+        np.testing.assert_array_equal(system.current_spins, state.current_spins)
         self.assertEqual(system.current_energy, state.current_energy)
 
     def test_custom_kernel_is_retained_during_density_rebuild(self):

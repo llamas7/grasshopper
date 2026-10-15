@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def sync_occupancy(system: System):
-    if system.current_system is None:
+    if system.current_spins is None:
         raise RuntimeError("Cannot build occupancy lists before initialization.")
     system.sync_occupancy_from_spins()
 
@@ -22,11 +22,11 @@ def sync_occupancy(system: System):
 def init_system(system: System):
     engine = get_engine(system.kind)
     calculate_energy = engine.energy
-    system.current_energy = calculate_energy(system.current_system, system.neighborhood)
-    system.best_energy = calculate_energy(system.best_system, system.neighborhood)
+    system.current_energy = calculate_energy(system.current_spins, system.neighborhood)
+    system.best_energy = calculate_energy(system.best_spins, system.neighborhood)
 
     if system.current_energy > system.best_energy:
-        system.best_system = system.current_system.copy()
+        system.best_spins = system.current_spins.copy()
         system.best_energy = system.current_energy
     if not system.antipodal:
         sync_occupancy(system)
@@ -39,16 +39,16 @@ def init_random(system: System, seed: Seed = None):
             all_spins = np.arange(len(system.grid))
             idx = np.random.choice(len(all_spins), size=system.num_spins, replace=False)
             occupied_sites = all_spins[idx].tolist()
-            system.current_system = np.zeros(len(system.grid), dtype=bool)
-            system.current_system[occupied_sites] = True
+            system.current_spins = np.zeros(len(system.grid), dtype=bool)
+            system.current_spins[occupied_sites] = True
         else:
-            system.current_system = np.random.randint(
+            system.current_spins = np.random.randint(
                 2, size=system.system_shape, dtype="bool"
             )
     finally:
         restore_numpy_state(rng_state)
 
-    system.best_system = system.current_system.copy()
+    system.best_spins = system.current_spins.copy()
     init_system(system)
 
 
@@ -64,11 +64,11 @@ def init_random_hemisphere(system: System, seed: Seed = None):
     finally:
         restore_numpy_state(rng_state)
     norm_vector = norm_vector / np.linalg.norm(norm_vector)
-    current_system = (system.grid[: len(system.neighborhood)] @ norm_vector) > 0
+    current_spins = (system.grid[: len(system.neighborhood)] @ norm_vector) > 0
     if system.kind is SystemKind.INDEPENDENT:
-        current_system = np.column_stack((current_system, ~current_system))
-    system.current_system = current_system.copy()
-    system.best_system = current_system.copy()
+        current_spins = np.column_stack((current_spins, ~current_spins))
+    system.current_spins = current_spins.copy()
+    system.best_spins = current_spins.copy()
     init_system(system)
 
 
@@ -137,8 +137,8 @@ def init_from_array(system: System, spin_array: NDArray[np.bool_]) -> None:
             )
 
     # Store exactly once; ensure no aliasing and contiguous memory
-    system.current_system = np.ascontiguousarray(normalized, dtype=np.bool_).copy()
-    system.best_system = system.current_system.copy()
+    system.current_spins = np.ascontiguousarray(normalized, dtype=np.bool_).copy()
+    system.best_spins = system.current_spins.copy()
     init_system(system)
 
 
@@ -164,8 +164,8 @@ def init_triangle_cogwheel(
         shifted_x = (grid_ss[:, 0] + np.pi / num_cogs + np.pi) % (2 * np.pi) - np.pi
         second_array = (grid_ss[:, 1] < interped(shifted_x))[: len(grid_ss) // 2]
         spin_array = np.column_stack((spin_array, second_array))
-    system.current_system = spin_array.copy()
-    system.best_system = spin_array.copy()
+    system.current_spins = spin_array.copy()
+    system.best_spins = spin_array.copy()
     init_system(system)
 
 
@@ -195,6 +195,6 @@ def init_cosine_cogwheel(
                                 grid_ss[:, 1] < cogwheel(grid_ss[:, 0] + (np.pi / num_cogs)) + np.pi / 2
                         )[: len(grid_ss) // 2]
         spin_array = np.column_stack((spin_array, second_system))
-    system.current_system = spin_array.copy()
-    system.best_system = spin_array.copy()
+    system.current_spins = spin_array.copy()
+    system.best_spins = spin_array.copy()
     init_system(system)

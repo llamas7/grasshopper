@@ -618,8 +618,8 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(initial["system_shape"], 3)
         self.assertFalse(initial["neighborhood_built"])
         self.assertFalse(initial["initialized"])
-        self.assertFalse(initial["has_current_system"])
-        self.assertFalse(initial["has_best_system"])
+        self.assertFalse(initial["has_current_spins"])
+        self.assertFalse(initial["has_best_spins"])
         self.assertFalse(initial["ready"])
         self.assertIsNone(initial["jump_distance"])
         self.assertIsNone(initial["jump_weights"])
@@ -642,8 +642,8 @@ class SystemApiTests(unittest.TestCase):
         system.array_init(np.array([True, False, True], dtype=bool))
         ready = system.state_summary()
         self.assertTrue(ready["initialized"])
-        self.assertTrue(ready["has_current_system"])
-        self.assertTrue(ready["has_best_system"])
+        self.assertTrue(ready["has_current_spins"])
+        self.assertTrue(ready["has_best_spins"])
         self.assertTrue(ready["ready"])
         self.assertEqual(ready["current_energy"], system.current_energy)
         self.assertEqual(ready["best_energy"], system.best_energy)
@@ -932,7 +932,7 @@ class SystemApiTests(unittest.TestCase):
         second.random_init(seed=42)
 
         self.assertEqual(actual_next, expected_next)
-        self.assertTrue(np.array_equal(first.current_system, second.current_system))
+        self.assertTrue(np.array_equal(first.current_spins, second.current_spins))
 
     def test_seeded_hemisphere_init_is_reproducible_without_global_reseed(self) -> None:
         np.random.seed(888)
@@ -949,7 +949,7 @@ class SystemApiTests(unittest.TestCase):
         second.hemisphere_init(seed=123)
 
         self.assertEqual(actual_next, expected_next)
-        self.assertTrue(np.array_equal(first.current_system, second.current_system))
+        self.assertTrue(np.array_equal(first.current_spins, second.current_spins))
 
     def test_seed_validation_rejects_bool(self) -> None:
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
@@ -1160,8 +1160,8 @@ class SystemApiTests(unittest.TestCase):
         summary = loaded.state_summary()
 
         self.assertTrue(summary["initialized"])
-        self.assertTrue(summary["has_current_system"])
-        self.assertTrue(summary["has_best_system"])
+        self.assertTrue(summary["has_current_spins"])
+        self.assertTrue(summary["has_best_spins"])
         self.assertFalse(summary["neighborhood_built"])
         self.assertFalse(summary["ready"])
         self.assertEqual(summary["jump_distance"], np.pi / 2)

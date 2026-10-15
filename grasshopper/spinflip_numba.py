@@ -101,7 +101,7 @@ if NUMBA_AVAILABLE:
 
     @njit(cache=True)
     def _complementary_recompute_energy_grid(
-        current_system,
+        current_spins,
         positive_indptr,
         positive_spins,
         positive_contributions,
@@ -110,22 +110,22 @@ if NUMBA_AVAILABLE:
         negative_contributions,
         total_weight,
     ):
-        n_spins = current_system.size
+        n_spins = current_spins.size
         energy_grid = np.empty(n_spins, dtype=np.float64)
         total_energy = 0.0
 
         for spin_idx in range(n_spins):
-            spin_state = current_system[spin_idx]
+            spin_state = current_spins[spin_idx]
             row_energy = 0.0
 
             for edge in range(positive_indptr[spin_idx], positive_indptr[spin_idx + 1]):
                 neighbor_idx = positive_spins[edge]
-                if spin_state == current_system[neighbor_idx]:
+                if spin_state == current_spins[neighbor_idx]:
                     row_energy += positive_contributions[edge]
 
             for edge in range(negative_indptr[spin_idx], negative_indptr[spin_idx + 1]):
                 neighbor_idx = negative_spins[edge]
-                if spin_state != current_system[neighbor_idx]:
+                if spin_state != current_spins[neighbor_idx]:
                     row_energy += negative_contributions[edge]
 
             energy_grid[spin_idx] = total_weight[spin_idx] - 2.0 * row_energy
@@ -136,7 +136,7 @@ if NUMBA_AVAILABLE:
 
     @njit(cache=True)
     def _independent_recompute_energy_grid(
-        current_system,
+        current_spins,
         positive_indptr,
         positive_spins,
         positive_contributions,
@@ -145,13 +145,13 @@ if NUMBA_AVAILABLE:
         negative_contributions,
         total_weight,
     ):
-        n_spins = current_system.shape[0]
+        n_spins = current_spins.shape[0]
         energy_grid = np.empty((n_spins, 2), dtype=np.float64)
         total_energy = 0.0
 
         for spin_idx in range(n_spins):
-            spin_a = current_system[spin_idx, 0]
-            spin_b = current_system[spin_idx, 1]
+            spin_a = current_spins[spin_idx, 0]
+            spin_b = current_spins[spin_idx, 1]
             anti_a = not spin_a
             anti_b = not spin_b
             row_energy_a = 0.0
@@ -160,17 +160,17 @@ if NUMBA_AVAILABLE:
             for edge in range(positive_indptr[spin_idx], positive_indptr[spin_idx + 1]):
                 neighbor_idx = positive_spins[edge]
                 contribution = positive_contributions[edge]
-                if anti_a == current_system[neighbor_idx, 1]:
+                if anti_a == current_spins[neighbor_idx, 1]:
                     row_energy_a += contribution
-                if anti_b == current_system[neighbor_idx, 0]:
+                if anti_b == current_spins[neighbor_idx, 0]:
                     row_energy_b += contribution
 
             for edge in range(negative_indptr[spin_idx], negative_indptr[spin_idx + 1]):
                 neighbor_idx = negative_spins[edge]
                 contribution = negative_contributions[edge]
-                if anti_a != current_system[neighbor_idx, 1]:
+                if anti_a != current_spins[neighbor_idx, 1]:
                     row_energy_a += contribution
-                if anti_b != current_system[neighbor_idx, 0]:
+                if anti_b != current_spins[neighbor_idx, 0]:
                     row_energy_b += contribution
 
             energy_grid[spin_idx, 0] = 0.5 * (total_weight[spin_idx] - 2.0 * row_energy_a)
@@ -182,7 +182,7 @@ if NUMBA_AVAILABLE:
 
     @njit(cache=True)
     def _complementary_metropolis_sweep(
-        current_system,
+        current_spins,
         energy_grid,
         positive_indptr,
         positive_spins,
@@ -193,7 +193,7 @@ if NUMBA_AVAILABLE:
         temperature,
         n_steps,
         current_energy,
-        best_system,
+        best_spins,
         best_energy,
         track_best,
         random_seed,
@@ -202,7 +202,7 @@ if NUMBA_AVAILABLE:
         accepted = 0
 
         for _ in range(n_steps):
-            spin_idx = np.random.randint(current_system.size)
+            spin_idx = np.random.randint(current_spins.size)
             dE = energy_grid[spin_idx]
 
             if dE < 0.0:
@@ -210,14 +210,14 @@ if NUMBA_AVAILABLE:
                     continue
 
             accepted += 1
-            current_system[spin_idx] = not current_system[spin_idx]
-            spin_state = current_system[spin_idx]
+            current_spins[spin_idx] = not current_spins[spin_idx]
+            spin_state = current_spins[spin_idx]
             energy_grid[spin_idx] = -energy_grid[spin_idx]
 
             for edge in range(positive_indptr[spin_idx], positive_indptr[spin_idx + 1]):
                 neighbor_idx = positive_spins[edge]
                 contribution = positive_contributions[edge]
-                if spin_state == current_system[neighbor_idx]:
+                if spin_state == current_spins[neighbor_idx]:
                     energy_grid[neighbor_idx] -= 2.0 * contribution
                 else:
                     energy_grid[neighbor_idx] += 2.0 * contribution
@@ -225,7 +225,7 @@ if NUMBA_AVAILABLE:
             for edge in range(negative_indptr[spin_idx], negative_indptr[spin_idx + 1]):
                 neighbor_idx = negative_spins[edge]
                 contribution = negative_contributions[edge]
-                if spin_state != current_system[neighbor_idx]:
+                if spin_state != current_spins[neighbor_idx]:
                     energy_grid[neighbor_idx] -= 2.0 * contribution
                 else:
                     energy_grid[neighbor_idx] += 2.0 * contribution
@@ -233,14 +233,14 @@ if NUMBA_AVAILABLE:
             current_energy += dE
             if track_best and current_energy > best_energy:
                 best_energy = current_energy
-                best_system[:] = current_system
+                best_spins[:] = current_spins
 
         return accepted / n_steps, current_energy, best_energy
 
 
     @njit(cache=True)
     def _independent_metropolis_sweep(
-        current_system,
+        current_spins,
         energy_grid,
         positive_indptr,
         positive_spins,
@@ -251,7 +251,7 @@ if NUMBA_AVAILABLE:
         temperature,
         n_steps,
         current_energy,
-        best_system,
+        best_spins,
         best_energy,
         track_best,
         random_seed,
@@ -260,7 +260,7 @@ if NUMBA_AVAILABLE:
         accepted = 0
 
         for _ in range(n_steps):
-            spin_idx = np.random.randint(current_system.shape[0])
+            spin_idx = np.random.randint(current_spins.shape[0])
             system_idx = np.random.randint(2)
             dE = energy_grid[spin_idx, system_idx]
 
@@ -269,15 +269,15 @@ if NUMBA_AVAILABLE:
                     continue
 
             accepted += 1
-            spin_state = current_system[spin_idx, system_idx]
+            spin_state = current_spins[spin_idx, system_idx]
             other_system = (system_idx + 1) % 2
-            current_system[spin_idx, system_idx] = not current_system[spin_idx, system_idx]
+            current_spins[spin_idx, system_idx] = not current_spins[spin_idx, system_idx]
             energy_grid[spin_idx, system_idx] = -energy_grid[spin_idx, system_idx]
 
             for edge in range(positive_indptr[spin_idx], positive_indptr[spin_idx + 1]):
                 neighbor_idx = positive_spins[edge]
                 contribution = positive_contributions[edge]
-                if spin_state == current_system[neighbor_idx, other_system]:
+                if spin_state == current_spins[neighbor_idx, other_system]:
                     energy_grid[neighbor_idx, other_system] -= contribution
                 else:
                     energy_grid[neighbor_idx, other_system] += contribution
@@ -285,7 +285,7 @@ if NUMBA_AVAILABLE:
             for edge in range(negative_indptr[spin_idx], negative_indptr[spin_idx + 1]):
                 neighbor_idx = negative_spins[edge]
                 contribution = negative_contributions[edge]
-                if spin_state != current_system[neighbor_idx, other_system]:
+                if spin_state != current_spins[neighbor_idx, other_system]:
                     energy_grid[neighbor_idx, other_system] -= contribution
                 else:
                     energy_grid[neighbor_idx, other_system] += contribution
@@ -293,7 +293,7 @@ if NUMBA_AVAILABLE:
             current_energy += dE
             if track_best and current_energy > best_energy:
                 best_energy = current_energy
-                best_system[:, :] = current_system
+                best_spins[:, :] = current_spins
 
         return accepted / n_steps, current_energy, best_energy
 
@@ -361,7 +361,7 @@ def run_spinflip_numba_sweep(
         return None
     if T < 0:
         raise ValueError(f"Temperature must be nonnegative, got {T!r}.")
-    if system.current_system is None or system.best_system is None:
+    if system.current_spins is None or system.best_spins is None:
         return None
 
     packed = _get_packed_neighborhood(system.neighborhood)
@@ -369,9 +369,9 @@ def run_spinflip_numba_sweep(
         return None
 
     random_seed = int(np.random.randint(0, np.iinfo(np.int32).max))
-    if system.current_system.ndim == 1 and energy_array.ndim == 1:
+    if system.current_spins.ndim == 1 and energy_array.ndim == 1:
         acceptance, current_energy, best_energy = _complementary_metropolis_sweep(
-            system.current_system,
+            system.current_spins,
             energy_array,
             packed.positive_indptr,
             packed.positive_spins,
@@ -382,19 +382,19 @@ def run_spinflip_numba_sweep(
             float(T),
             int(n_steps),
             float(system.current_energy),
-            system.best_system,
+            system.best_spins,
             float(system.best_energy),
             bool(track_best),
             random_seed,
         )
     elif (
-        system.current_system.ndim == 2
-        and system.current_system.shape[1] == 2
+        system.current_spins.ndim == 2
+        and system.current_spins.shape[1] == 2
         and energy_array.ndim == 2
         and energy_array.shape[1] == 2
     ):
         acceptance, current_energy, best_energy = _independent_metropolis_sweep(
-            system.current_system,
+            system.current_spins,
             energy_array,
             packed.positive_indptr,
             packed.positive_spins,
@@ -405,7 +405,7 @@ def run_spinflip_numba_sweep(
             float(T),
             int(n_steps),
             float(system.current_energy),
-            system.best_system,
+            system.best_spins,
             float(system.best_energy),
             bool(track_best),
             random_seed,

@@ -253,19 +253,19 @@ class OccupancyState:
 class SystemState:
     """Mutable spin state separated from static system metadata."""
 
-    current_system: NDArray[np.bool_] | None = None
+    current_spins: NDArray[np.bool_] | None = None
     current_energy: float = 0.0
-    best_system: NDArray[np.bool_] | None = None
+    best_spins: NDArray[np.bool_] | None = None
     best_energy: float = 0.0
     occupancy: OccupancyState | None = None
 
     def copy(self) -> "SystemState":
         return SystemState(
-            current_system=(
-                None if self.current_system is None else self.current_system.copy()
+            current_spins=(
+                None if self.current_spins is None else self.current_spins.copy()
             ),
             current_energy=float(self.current_energy),
-            best_system=None if self.best_system is None else self.best_system.copy(),
+            best_spins=None if self.best_spins is None else self.best_spins.copy(),
             best_energy=float(self.best_energy),
             occupancy=None if self.occupancy is None else self.occupancy.copy(),
         )

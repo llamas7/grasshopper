@@ -316,7 +316,7 @@ system.hemisphere_init(seed=123)
 system.anneal(steps=100_000, seed=456)
 system.greedy(reinit=True)
 print(system.best_probability)
-print(system.angle_probabilities(system.best_system))
+print(system.angle_probabilities(system.best_spins))
 ```
 
 The objective is `sum(q[a] * P[a])` on the **same pair of lawns**. Probabilities

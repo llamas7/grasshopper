@@ -64,7 +64,7 @@ def main(argv=None):
                           seed=anneal_seed, reinit=True)
         if args.greedy_steps:
             # Polish the best state visited, rather than a warmer terminal state.
-            system.array_init(system.best_system.copy())
+            system.array_init(system.best_spins.copy())
             system.greedy(max_steps=args.greedy_steps, reinit=True)
         checkpoint = f"run_{i:03d}.nc"
         system.save(args.output_dir / checkpoint)
@@ -73,7 +73,7 @@ def main(argv=None):
                          current_probability=system.current_probability,
                          best_probability=system.best_probability,
                          current_angle_probabilities=system.angle_probabilities().tolist(),
-                         best_angle_probabilities=system.angle_probabilities(system.best_system).tolist()))
+                         best_angle_probabilities=system.angle_probabilities(system.best_spins).tolist()))
         if winner is None or system.best_probability > winner.best_probability:
             winner = system
         print(f"Run {i}: achievable score {system.best_probability:.10g}")
