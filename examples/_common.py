@@ -134,8 +134,8 @@ def report(system: gh.System, *, title: str) -> dict[str, float]:
         "best_energy": float(system.best_energy),
         "current_probability": float(system.current_probability),
         "best_probability": float(system.best_probability),
-        "current_graph_probability": float(system.current_graph_probability),
-        "best_graph_probability": float(system.best_graph_probability),
+        "current_graph_probability": float(system.probability(normalization="graph")),
+        "best_graph_probability": float(system.probability("best", normalization="graph")),
     }
     print(title)
     print(f"  sites: {len(system.grid)}")

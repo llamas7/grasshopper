@@ -428,30 +428,30 @@ class System:
 
     def probability(
         self,
-        spins: NDArray[np.bool_] | None = None,
+        spins: NDArray[np.bool_] | str = "current",
         *,
         normalization: str = "continuum",
     ) -> float:
-        """Return the Grasshopper probability for a spin configuration."""
-        if spins is None:
-            return self._state_probability("current", normalization)
+        """Return the Grasshopper probability of a spin configuration.
+
+        ``spins`` is ``"current"``, ``"best"``, or an explicit spin array.
+        ``normalization`` is ``"continuum"`` (default) or ``"graph"``.
+        """
+        if isinstance(spins, str):
+            if spins not in ("current", "best"):
+                raise ValueError("spins must be 'current', 'best', or a spin array.")
+            return self._state_probability(spins, normalization)
         return calculate_probability(self, spins, normalization=normalization)
 
     @property
     def current_probability(self) -> float:
+        """Continuum probability of ``current_spins``."""
         return self._state_probability("current", "continuum")
 
     @property
     def best_probability(self) -> float:
+        """Continuum probability of ``best_spins``."""
         return self._state_probability("best", "continuum")
-
-    @property
-    def current_graph_probability(self) -> float:
-        return self._state_probability("current", "graph")
-
-    @property
-    def best_graph_probability(self) -> float:
-        return self._state_probability("best", "graph")
 
     @property
     def anneal_data(self) -> AnnealData:

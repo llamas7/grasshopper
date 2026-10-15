@@ -40,8 +40,8 @@ class ExampleSmokeTests(unittest.TestCase):
             system.best_energy,
             system.current_probability,
             system.best_probability,
-            system.current_graph_probability,
-            system.best_graph_probability,
+            system.probability(normalization="graph"),
+            system.probability("best", normalization="graph"),
         ):
             self.assertTrue(np.isfinite(value))
 

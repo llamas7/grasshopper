@@ -173,8 +173,8 @@ class ProbabilityTests(unittest.TestCase):
                 system.best_probability,
                 system.probability(state),
             )
-            self.assertTrue(np.isfinite(system.current_graph_probability))
-            self.assertTrue(np.isfinite(system.best_graph_probability))
+            self.assertTrue(np.isfinite(system.probability(normalization="graph")))
+            self.assertTrue(np.isfinite(system.probability("best", normalization="graph")))
 
     def test_antipodal_graph_probability_is_half_at_right_angle(self) -> None:
         complementary = gh.System.complementary(spherical_grid())
@@ -396,13 +396,19 @@ class ProbabilityTests(unittest.TestCase):
         )
         keys = ("current_probability", "best_probability",
                 "current_graph_probability", "best_graph_probability")
+
+        def read(system, key):
+            state, _, mode = key.partition("_")
+            normalization = "graph" if mode.startswith("graph") else "continuum"
+            return system.probability(state, normalization=normalization)
+
         for index, construct in enumerate(constructors):
             with self.subTest(family=index):
                 system = construct()
                 system.compute_neighborhood(1.0, silent=True)
                 system.random_init(seed=123)
                 system.greedy(reinit=False)
-                expected = {key: getattr(system, key) for key in keys}
+                expected = {key: read(system, key) for key in keys}
                 path = system.save(test_dir / f"family_{index}.nc")
                 with xr.open_dataset(path) as ds:
                     for key, value in expected.items():
@@ -412,7 +418,7 @@ class ProbabilityTests(unittest.TestCase):
                 loaded.load(path)
                 self.assertIsNone(loaded.neighborhood)
                 for key, value in expected.items():
-                    self.assertAlmostEqual(getattr(loaded, key), value)
+                    self.assertAlmostEqual(read(loaded, key), value)
                 self.assertAlmostEqual(loaded.probability(), expected["current_probability"])
                 self.assertAlmostEqual(loaded.probability(normalization="graph"),
                                        expected["current_graph_probability"])
@@ -424,20 +430,20 @@ class ProbabilityTests(unittest.TestCase):
                 clone = loaded.clone()
                 clone.current_energy = 0.0
                 with self.assertRaisesRegex(RuntimeError, "Neighborhood"):
-                    _ = clone.current_graph_probability
-                self.assertAlmostEqual(loaded.current_graph_probability,
+                    _ = clone.probability(normalization="graph")
+                self.assertAlmostEqual(loaded.probability(normalization="graph"),
                                        expected["current_graph_probability"])
 
                 loaded.compute_neighborhood(silent=True)
                 for key, value in expected.items():
-                    self.assertAlmostEqual(getattr(loaded, key), value)
+                    self.assertAlmostEqual(read(loaded, key), value)
 
     def test_save_records_why_continuum_probability_is_unavailable(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
         system.compute_neighborhood(1.0, kernel=gh.KernelSpec.exact(), silent=True)
         system.array_init(np.array([True, False, True, False], dtype=bool))
-        expected = system.current_graph_probability
+        expected = system.probability(normalization="graph")
         path = system.save(test_dir / "exact.nc")
         with xr.open_dataset(path) as ds:
             self.assertNotIn("current_probability", ds.attrs)
@@ -445,7 +451,7 @@ class ProbabilityTests(unittest.TestCase):
             self.assertAlmostEqual(ds.attrs["current_graph_probability"], expected)
         loaded = gh.System.euclidean(euclidean_grid(), num_spins=2)
         loaded.load(path)
-        self.assertAlmostEqual(loaded.current_graph_probability, expected)
+        self.assertAlmostEqual(loaded.probability(normalization="graph"), expected)
 
     def test_load_rejects_different_particle_count_and_malformed_spins(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
@@ -477,7 +483,7 @@ class ProbabilityTests(unittest.TestCase):
         loaded = gh.System.complementary(spherical_grid())
         loaded.load(path, rebuild_neighborhood=True)
         self.assertAlmostEqual(loaded.current_probability, system.current_probability)
-        self.assertAlmostEqual(loaded.current_graph_probability, system.current_graph_probability)
+        self.assertAlmostEqual(loaded.probability(normalization="graph"), system.probability(normalization="graph"))
 
     def test_custom_shell_measure_must_be_resupplied_after_load(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))

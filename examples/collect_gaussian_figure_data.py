@@ -1163,7 +1163,7 @@ def collect_case(
         "optimizer": args.optimizer,
         "energy": float(system.best_energy),
         "continuum_probability": float(system.best_probability),
-        "graph_probability": float(system.best_graph_probability),
+        "graph_probability": float(system.probability("best", normalization="graph")),
         "runtime_seconds": float(elapsed),
         "grid_path": relative_path(grid_path, output_dir),
         "state_path": relative_path(state_path, output_dir),

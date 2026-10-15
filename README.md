@@ -395,8 +395,8 @@ Finite grids can also be normalized by their available outgoing interaction
 weight:
 
 ```python
-p_graph = system.current_graph_probability
-p_graph_best = system.best_graph_probability
+p_graph = system.probability(normalization="graph")
+p_graph_best = system.probability("best", normalization="graph")
 p_graph_other = system.probability(other_boolean_state, normalization="graph")
 ```
 
@@ -633,7 +633,7 @@ import xarray as xr
 
 system.load(path)
 print(system.best_probability)
-print(system.current_graph_probability)
+print(system.probability(normalization="graph"))
 # Or inspect the file directly:
 with xr.open_dataset(path) as ds:
     print(ds.attrs["best_probability"])
