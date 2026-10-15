@@ -75,8 +75,8 @@ class System:
     the grid and neighborhood.
     """
 
-    _SAVE_FORMAT_VERSION = "5.0"
-    _SUPPORTED_SAVE_FORMAT_VERSIONS = {"4.0", "5.0"}
+    _SAVE_FORMAT_VERSION = "6.0"
+    _SUPPORTED_SAVE_FORMAT_VERSIONS = {"4.0", "5.0", "6.0"}
 
     # --- Construction ---
 
@@ -99,6 +99,7 @@ class System:
         self._kernel_is_custom = False
         self._jump_distance = None
         self._jump_weights = None
+        self._sampling_probabilities = None
         self._distance_metric = None
         self._distance_metric_is_custom = False
         self._shell_measure = None
@@ -116,6 +117,7 @@ class System:
         self._greedy_history = GreedyHistory()
         self._parallel_tempering_history = ParallelTemperingHistory()
         self._stored_probabilities: dict[str, float] = {}
+        self._stored_angle_probabilities = {}
 
     @classmethod
     def complementary(cls, grid: NDArray[np.float64]) -> "System":
@@ -414,6 +416,7 @@ class System:
         self._current_system = value
         self._stored_probabilities.pop("current_probability", None)
         self._stored_probabilities.pop("current_graph_probability", None)
+        self._stored_angle_probabilities.pop("current", None)
 
     @property
     def current_energy(self) -> float:
@@ -424,6 +427,7 @@ class System:
         self._current_energy = float(value)
         self._stored_probabilities.pop("current_probability", None)
         self._stored_probabilities.pop("current_graph_probability", None)
+        self._stored_angle_probabilities.pop("current", None)
 
     @property
     def best_system(self) -> NDArray[np.bool_] | None:
@@ -434,6 +438,7 @@ class System:
         self._best_system = value
         self._stored_probabilities.pop("best_probability", None)
         self._stored_probabilities.pop("best_graph_probability", None)
+        self._stored_angle_probabilities.pop("best", None)
 
     @property
     def best_energy(self) -> float:
@@ -444,6 +449,7 @@ class System:
         self._best_energy = float(value)
         self._stored_probabilities.pop("best_probability", None)
         self._stored_probabilities.pop("best_graph_probability", None)
+        self._stored_angle_probabilities.pop("best", None)
 
     def probability(
         self,
@@ -521,6 +527,8 @@ class System:
             "ready": neighborhood_built and bool(self.initialized),
             "jump_distance": self.jump_distance,
             "jump_weights": self.jump_weights,
+            "sampling_probabilities": self.sampling_probabilities,
+            "objective_type": "anticorrelation" if self.sampling_probabilities is not None else None,
             "kernel": kernel_summary,
             "distance_metric": metric_summary,
             "current_energy": float(self.current_energy),
@@ -563,6 +571,8 @@ class System:
         leaves the physical jump-distance scale unchanged as long as the
         occupied-site count is unchanged.
         """
+        self._sampling_probabilities = None
+        self._stored_angle_probabilities.clear()
         using_saved_distance = jump_distance is None
         coerced_jump_distance = self._coerce_jump_distance(
             self.jump_distance if using_saved_distance else jump_distance
@@ -647,11 +657,64 @@ class System:
         self._refresh_energies_after_neighborhood_build()
         return self
 
+    @property
+    def sampling_probabilities(self) -> tuple[float, ...] | None:
+        """Experimental angle probabilities, or None for a raw neighborhood."""
+        return self._sampling_probabilities
+
+    def compute_anticorrelation_neighborhood(
+        self, angles: Sequence[float], *, probabilities: Sequence[float] | None = None,
+        kernel: KernelSpec | str | None = None,
+    ) -> "System":
+        """Build a fixed mixture for independent lawns, including exact theta=0.
+
+        Stored energy is num_spins/2 times the continuum mixture score.
+        Nonzero angles use the selected regularization; zero is always exact.
+        """
+        from .anticorrelation import build_objective, validate_objective
+        angles, probabilities, kernel = validate_objective(
+            self, angles, probabilities, kernel
+        )
+        rows, weights = build_objective(self, angles, probabilities, kernel)
+        self._sampling_probabilities = probabilities
+        self._jump_distance = angles
+        self._jump_weights = weights
+        self._kernel = kernel
+        self._kernel_is_custom = False
+        self._distance_metric = "spherical"
+        self._distance_metric_is_custom = False
+        self._shell_measure = None
+        self._shell_measure_is_custom = False
+        self._radial_bounds = None
+        self._neighborhood = rows
+        self._stored_probabilities.clear()
+        self._stored_angle_probabilities.clear()
+        self._refresh_energies_after_neighborhood_build()
+        if self.current_system is not None and (
+            self.best_system is None or self.current_energy > self.best_energy
+        ):
+            self.best_system = self.current_system.copy()
+            self.best_energy = self.current_energy
+        return self
+
+    def angle_probabilities(self, spins: NDArray[np.bool_] | None = None) -> np.ndarray:
+        """Evaluate each configured angle on the same state, in input order."""
+        from .anticorrelation import component_probabilities
+        if self.sampling_probabilities is None:
+            raise RuntimeError("Build an anticorrelation objective first.")
+        state = "current" if spins is None or spins is self.current_system else (
+            "best" if spins is self.best_system else None
+        )
+        if self.neighborhood is None and state in self._stored_angle_probabilities:
+            return np.array(self._stored_angle_probabilities[state], copy=True)
+        return component_probabilities(self, self.current_system if spins is None else spins)
+
     def clone(self) -> "System":
         """Copy spins and histories while sharing the grid and neighborhood."""
         clone = self.__class__.__new__(self.__class__)
         clone.__dict__ = self.__dict__.copy()
         clone._stored_probabilities = self._stored_probabilities.copy()
+        clone._stored_angle_probabilities = {k: tuple(v) for k, v in self._stored_angle_probabilities.items()}
         state = self.snapshot_state()
         clone._current_system = state.current_system
         clone._best_system = state.best_system
@@ -1099,6 +1162,16 @@ class System:
                     attrs["jump_weights_json"] = json.dumps(
                         [float(weight) for weight in self.jump_weights]
                     )
+        if self.sampling_probabilities is not None:
+            attrs["objective_type"] = "anticorrelation"
+            attrs["objective_normalization"] = "energy=num_spins*score/2"
+            attrs["sampling_probabilities_json"] = json.dumps(self.sampling_probabilities)
+            for state in ("current", "best"):
+                spins = getattr(self, f"{state}_system")
+                if spins is not None:
+                    attrs[f"{state}_angle_probabilities_json"] = json.dumps(
+                        self.angle_probabilities(spins).tolist()
+                    )
         attrs.update(self._kernel_metadata())
         attrs.update(self._normalization_metadata())
         attrs.update(self._distance_metric_metadata())
@@ -1283,8 +1356,37 @@ class System:
         if self.current_system is None and self.best_system is None:
             self._initialized = False
 
+        self._sampling_probabilities = None
+        self._stored_angle_probabilities.clear()
+        objective = ds.attrs.get("objective_type")
+        if objective is not None:
+            if objective != "anticorrelation" or format_version != "6.0":
+                raise ValueError("Unsupported saved objective type or format.")
+            if ds.attrs.get("objective_normalization") != "energy=num_spins*score/2":
+                raise ValueError("Unsupported objective normalization.")
+            from .anticorrelation import validate_objective
+            self._require_dataset_attr(ds, "sampling_probabilities_json")
+            angles, probabilities, _ = validate_objective(
+                self, self.jump_distance,
+                self._json_attr(ds, "sampling_probabilities_json"), self.kernel
+            )
+            self._jump_distance = angles
+            self._sampling_probabilities = probabilities
+            for state in ("current", "best"):
+                values = self._json_attr(ds, f"{state}_angle_probabilities_json")
+                if values is not None:
+                    values = np.asarray(values, dtype=float)
+                    if values.shape != (len(angles),) or not np.all(np.isfinite(values)):
+                        raise ValueError("Invalid saved angle probabilities.")
+                    self._stored_angle_probabilities[state] = tuple(values)
         if rebuild_neighborhood:
-            self.compute_neighborhood(silent=silent)
+            if self.sampling_probabilities is not None:
+                self.compute_anticorrelation_neighborhood(
+                    self.jump_distance, probabilities=self.sampling_probabilities,
+                    kernel=self.kernel,
+                )
+            else:
+                self.compute_neighborhood(silent=silent)
 
     # --- Implementation helpers ---
 

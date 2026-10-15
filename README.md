@@ -299,6 +299,73 @@ single row entry. When `jump_weights` is omitted, every shell uses weight
 
 ## Energy and probability
 
+### Fixed multi-angle anti-correlation experiments
+
+Use actual angle-selection probabilities with two independent antipodal lawns:
+
+```python
+system = gh.System.independent(grid)
+system.compute_anticorrelation_neighborhood(
+    angles=[0.0, np.pi / 9],
+    probabilities=[0.2, 0.8],
+    kernel=gh.KernelSpec.cosine(),
+)
+system.hemisphere_init(seed=123)
+system.anneal(steps=100_000, seed=456)
+system.greedy(reinit=True)
+print(system.best_probability)
+print(system.angle_probabilities(system.best_system))
+```
+
+The objective is `sum(q[a] * P[a])` on the **same pair of lawns**. Probabilities
+default to uniform and must be finite, nonnegative, and sum to one. Angles are
+in radians in `[0, pi)`; pi is not supported by this interface. The supplied
+grid must contain unit vectors with matching antipodes in its second half.
+
+Zero angle is an exact same-site anti-correlation check: the fraction of stored
+sites where the two response bits differ. It is not a broadened shell, even
+when finite angles use a Gaussian. Built-in compact and Gaussian kernels are
+supported for finite angles; custom and diagnostic exact kernels are excluded.
+Finite-angle probabilities retain their existing continuum regularization and
+are not clamped. Refine the grid to establish convergence.
+
+`sampling_probabilities` stores experimental probabilities; `jump_weights`
+contains derived interaction coefficients. Stored energy is
+`num_spins / 2 * weighted_score`, so temperature is measured in these energy
+units and need not match temperatures used for raw-shell searches.
+`current_probability` and `best_probability` return the weighted score.
+`angle_probabilities()` evaluates the current state, or accepts any valid state,
+and returns components in input order. Component graphs are built on demand;
+this diagnostic costs more than reading the combined score. Graph-normalized
+probability remains a separate discretization diagnostic.
+
+The existing `compute_neighborhood(..., jump_weights=...)` interface retains
+its raw interaction semantics. Calling it explicitly exits objective mode.
+To reconstruct a saved objective, use `load(path, rebuild_neighborhood=True)`.
+Checkpoints preserve objective metadata and current/best component scores;
+saved scores can also be read and re-saved without rebuilding.
+
+A runnable experiment uses one hemisphere start and three random starts:
+
+```bash
+python examples/spherical_multi_angle.py --angles-over-pi 0 0.1111111111111111 --probabilities 0.2 0.8
+```
+
+Use `--grid path/to/grid.npy` (or a text grid), or `--pairs` for the generated
+Fibonacci demonstration grid. The default 300 pairs is a demonstration, not a
+converged physical calculation. `--restarts`, `--seed`, `--steps`,
+`--anneal-iterations`, and `--greedy-steps` control optimization. For Gaussian
+finite-angle shells use `--kernel gaussian --sigma 0.02`; sigma is in radians.
+Every experiment writes its grid, each restart's checkpoint, and `summary.json`
+with per-angle scores, seeds, parameters, and the winning checkpoint. Choose a
+fresh `--output-dir` for another experiment.
+
+Results are achievable classical candidates, not certified classical optima.
+This workflow maximizes average anti-correlation; it does not optimize an
+angle-resolved KL or Chernoff statistic.
+
+### Raw-neighborhood normalization
+
 Optimization continues to maximize the unnormalized pair energy. Probability
 normalization is applied only when requested:
 
@@ -550,9 +617,11 @@ configuration, then call `load(...)`. Rebuild the neighborhood afterward if
 you want to continue optimizing. For saved states that used built-in kernels
 and distance metrics, `compute_neighborhood()` reuses the loaded metadata when
 you omit those arguments. If the original kernel, metric, or shell measure was
-a custom callable, pass it again while rebuilding. Format `5.0` is written;
-format `4.0` checkpoints are also read and their complementary-model metadata
-is migrated during loading.
+a custom callable, pass it again while rebuilding. Format `6.0` is written;
+formats `4.0` and `5.0` are also read. Format `4.0` complementary-model metadata
+is migrated during loading. For normalized anti-correlation objectives, use
+`load(path, rebuild_neighborhood=True)` to restore the experimental weights
+and exact zero-angle term rather than calling the raw-neighborhood API.
 
 Saved probabilities can be read immediately after loading, without rebuilding
 the neighborhood, and survive saving the loaded system again:

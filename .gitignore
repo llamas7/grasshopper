@@ -32,6 +32,7 @@
 !examples/parallel_tempering.py
 !examples/spherical_complementary.py
 !examples/spherical_independent.py
+!examples/spherical_multi_angle.py
 !examples/spherical_non_antipodal.py
 
 # Ignore generated/cache files even inside unignored directories.

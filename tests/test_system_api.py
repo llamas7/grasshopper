@@ -1037,7 +1037,7 @@ class SystemApiTests(unittest.TestCase):
 
         attrs = system.to_dataset().attrs
 
-        self.assertEqual(attrs["format_version"], "5.0")
+        self.assertEqual(attrs["format_version"], "6.0")
         self.assertEqual(attrs["geometry"], "euclidean")
         self.assertEqual(attrs["constraint"], "fixed-density")
         self.assertEqual(attrs["interaction_model"], "occupancy")
