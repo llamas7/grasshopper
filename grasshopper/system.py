@@ -749,6 +749,7 @@ class System:
         self._occupancy = state.occupancy
 
     def random_init(self, seed: Seed = None) -> "System":
+        """Initialize a random spin state (fixed density keeps ``num_spins`` occupied)."""
         self._require_neighborhood()
         init_random(self, seed=seed)
         self._initialized = True
@@ -809,6 +810,7 @@ class System:
         return self
 
     def hemisphere_init(self, seed: Seed = None) -> "System":
+        """Initialize a spherical system with one randomly oriented hemisphere up."""
         self._require_neighborhood()
         if self.geometry == Geometry.EUCLIDEAN:
             raise ValueError("hemisphere_init() requires a spherical grid.")
@@ -817,18 +819,21 @@ class System:
         return self
 
     def tri_cog_init(self, num_cogs: int, cog_height: float) -> "System":
+        """Initialize a spherical system to a triangle-wave cogwheel boundary."""
         self._require_neighborhood()
         init_triangle_cogwheel(self, num_cogs, cog_height)
         self._initialized = True
         return self
 
     def cos_cog_init(self, num_cogs: int, cog_height: float) -> "System":
+        """Initialize a spherical system to a cosine-wave cogwheel boundary."""
         self._require_neighborhood()
         init_cosine_cogwheel(self, num_cogs, cog_height)
         self._initialized = True
         return self
 
     def array_init(self, spin_array: NDArray[np.bool_]) -> "System":
+        """Initialize from an explicit spin array shaped like ``system_shape``."""
         self._require_neighborhood()
         init_from_array(self, spin_array)
         self._initialized = True
@@ -852,7 +857,12 @@ class System:
         verbose: bool = False,
         reinit: bool = False,
         seed: Seed = None,
-    ) -> None:
+    ) -> AnnealData:
+        """Run simulated annealing and return the updated ``anneal_data``.
+
+        ``schedule`` sets the base schedule; any non-None keyword overrides
+        the matching field (``steps`` sets ``starting_steps``).
+        """
         self._require_neighborhood()
         self._require_init()
         resolved_starting_temp = (
@@ -877,6 +887,7 @@ class System:
             reinit=reinit,
             seed=seed,
         )
+        return self.anneal_data
 
     def greedy(
         self,
@@ -887,6 +898,7 @@ class System:
         reinit: bool = False,
         verbose: bool = False,
     ) -> GreedyResult:
+        """Apply the best single update while its energy gain exceeds ``min_delta``."""
         self._require_neighborhood()
         self._require_init()
         return greedy_optimization(
@@ -920,6 +932,11 @@ class System:
         n_workers: int = 1,
         verbose: bool = False,
     ) -> ParallelTemperingResult:
+        """Run replica-exchange Monte Carlo and return the run summary.
+
+        Pass ``temperatures`` directly or let ``num_replicas`` geometric
+        temperatures span ``cold_temp`` to ``hot_temp``.
+        """
         self._require_neighborhood()
         self._require_init()
         return parallel_tempering(
@@ -997,6 +1014,7 @@ class System:
         voronoi: bool = False,
         plot_figure: bool = True,
     ):
+        """Plot the best (or current) spin state; returns the figure if not shown."""
         system_to_plot = self.current_system if plot_current else self.best_system
         if system_to_plot is None and self.geometry != Geometry.EUCLIDEAN:
             self._require_init()
@@ -1031,6 +1049,7 @@ class System:
         selected_site: int,
         plot_figure: bool = True,
     ):
+        """Plot one site's neighbors colored by contribution (2D Euclidean only)."""
         if self.geometry != Geometry.EUCLIDEAN or self.dimension != 2:
             raise ValueError(
                 "plot_neighbors() is only available for 2D Euclidean systems."
@@ -1066,16 +1085,15 @@ class System:
             plot_figure=plot_figure,
         )
 
-    def plot_boundary(
-        self, plot_current: bool = False, plot_figure: bool = True
-    ) -> None:
+    def plot_boundary(self, plot_current: bool = False, plot_figure: bool = True):
+        """Plot the up/down boundary in (phi, theta); returns ``(fig, ax)`` if not shown."""
         if self.geometry == Geometry.EUCLIDEAN:
             raise ValueError(
                 "Boundary plotting is only implemented for spherical grids."
             )
         system_to_plot = self.current_system if plot_current else self.best_system
         independent = self.constraint == ConstraintModel.INDEPENDENT
-        graph_boundary(
+        return graph_boundary(
             grid=self.grid,
             spin_states=system_to_plot,
             antipodal=self.antipodal,
@@ -1172,9 +1190,10 @@ class System:
         *,
         rebuild_neighborhood: bool = False,
         silent: bool = True,
-    ) -> None:
+    ) -> "System":
         """
         Load state from NetCDF saved by `save()` without touching `self.grid`.
+        Returns the system so it can be chained after a constructor.
         Validates that the saved state matches this instance's grid shape and configuration.
         Optionally rebuild the neighborhood from saved built-in metadata.
 
@@ -1367,6 +1386,7 @@ class System:
                 )
             else:
                 self.compute_neighborhood(silent=silent)
+        return self
 
     # --- Implementation helpers ---
 

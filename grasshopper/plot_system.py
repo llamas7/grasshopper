@@ -900,7 +900,6 @@ def graph_boundary(
         boundary_pointsB = extract_boundary_points(
             rotated_points, spin_states[:, 1], limit=limit, antipodal=antipodal
         )
-        process_data(boundary_pointsA)
         surface_pointsA = convert_ss(boundary_pointsA)
         surface_pointsB = convert_ss(boundary_pointsB)
         phi_movedA, theta_movedA, shiftA = process_data(surface_pointsA, get_shift=True)
