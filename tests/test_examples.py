@@ -22,7 +22,7 @@ import gaussian_kernel
 import parallel_tempering
 import spherical_complementary
 import spherical_independent
-import spherical_non_antipodal
+import spherical_fixed_density
 from _common import paired_fibonacci_sphere
 
 
@@ -69,7 +69,7 @@ class ExampleSmokeTests(unittest.TestCase):
                 [6, 2],
             ),
             (
-                spherical_non_antipodal,
+                spherical_fixed_density,
                 "best_lawn.html",
                 [12],
             ),
@@ -95,7 +95,7 @@ class ExampleSmokeTests(unittest.TestCase):
                 self.assertEqual(list(system.current_system.shape), expected_shape)
                 self.assertTrue((output_dir / filename).exists())
                 self.assert_finite_summary(system)
-                if module is spherical_non_antipodal:
+                if module is spherical_fixed_density:
                     self.assertEqual(
                         np.count_nonzero(system.current_system),
                         len(system.grid) // 2,

@@ -8,7 +8,7 @@ from ..kernels import (
     calculate_contributions,
     resolve_kernel,
 )
-from ..core import KernelSpec, NonAntipodalNeighborhood
+from ..core import KernelSpec, FixedDensityNeighborhood
 from ..metrics import DistanceMetric, resolve_distance_metric, validate_distances
 
 try:
@@ -151,9 +151,9 @@ def build_euclidean_neighborhood(
     silent: bool = True,
     distance_metric: DistanceMetric = "euclidean",
     occupied_sites: int | None = None,
-) -> list[NonAntipodalNeighborhood]:
+) -> list[FixedDensityNeighborhood]:
     """
-    Build a non-antipodal neighborhood using a modular distance metric.
+    Build a fixed-density neighborhood using a modular distance metric.
 
     `grid_points` are candidate lattice sites. `occupied_sites` controls the
     physical cell length used by the interaction kernel:
@@ -201,7 +201,7 @@ def build_euclidean_neighborhood(
         grid_tree = sci.spatial.cKDTree(grid_points)
     all_spins = np.arange(site_count, dtype=np.int64)
 
-    neighborhood: list[NonAntipodalNeighborhood] = []
+    neighborhood: list[FixedDensityNeighborhood] = []
     for i in tqdm(range(site_count), disable=silent):
         if grid_tree is None:
             pruned_spins = all_spins.copy()
@@ -224,7 +224,7 @@ def build_euclidean_neighborhood(
 
         if pruned_spins.size == 0:
             neighborhood.append(
-                NonAntipodalNeighborhood(
+                FixedDensityNeighborhood(
                     neighbor_spins=np.array([], dtype=np.int64),
                     contributions=np.array([], dtype=np.float64),
                     total_weight=0.0,
@@ -239,7 +239,7 @@ def build_euclidean_neighborhood(
             jump_distance, cell_length, distances, discrete_function
         )
         neighborhood.append(
-            NonAntipodalNeighborhood(
+            FixedDensityNeighborhood(
                 neighbor_spins=pruned_spins[contributing_mask],
                 contributions=contributions,
                 total_weight=total_weight,

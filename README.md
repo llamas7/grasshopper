@@ -21,7 +21,7 @@ It includes:
 
 - spherical complementary systems
 - spherical independent systems
-- spherical fixed-density non-antipodal systems
+- spherical fixed-density systems
 - Euclidean fixed-density systems
 - simulated annealing
 - greedy local descent
@@ -61,7 +61,7 @@ import grasshopper as gh
 
 grid = np.loadtxt("path/to/grid.txt")
 
-system = gh.System.non_antipodal(grid)
+system = gh.System.fixed_density(grid)
 system.compute_neighborhood(
     jump_distance=0.23 * np.pi,
     kernel=gh.KernelSpec.cosine(),
@@ -77,7 +77,7 @@ system.parallel_temper(
 )
 system.greedy(reinit=False)
 print(system.best_probability)
-system.save("output/non_antipodal_run.nc")
+system.save("output/fixed_density_run.nc")
 ```
 
 Setup methods can be chained:
@@ -120,26 +120,30 @@ The recommended entrypoints are:
 ```python
 system = gh.System.complementary(grid)
 system = gh.System.independent(grid)
-system = gh.System.non_antipodal(grid)
+system = gh.System.fixed_density(grid)
 system = gh.System.euclidean(grid, num_spins=1000)
 system = gh.System.square_lattice(width=64, height=64, density=0.5)
 system = gh.System.hexagonal_lattice(width=32, height=32, num_spins=512)
 ```
 
-There is also a lower-level explicit constructor:
+There is also a lower-level constructor that takes the system kind:
 
 ```python
-system = gh.System(grid, config=gh.SystemConfig.non_antipodal())
+system = gh.System(grid, gh.SystemKind.FIXED_DENSITY)
+system = gh.System(grid, "euclidean", num_spins=1000)
 ```
 
 ## Supported system families
 
-| Family | Constructor | Geometry | Constraint | Update rule |
+| `SystemKind` | Constructor | Grid | Spins | Update rule |
 | --- | --- | --- | --- | --- |
-| Complementary | `System.complementary(grid)` | Spherical | Antipodal | Flip |
-| Independent | `System.independent(grid)` | Spherical | Independent | Flip |
-| Non-antipodal | `System.non_antipodal(grid)` | Spherical | Fixed-density | Swap |
-| Euclidean | `System.euclidean(grid, num_spins=...)` | Euclidean | Fixed-density | Swap |
+| `COMPLEMENTARY` | `System.complementary(grid)` | Spherical, antipodal pairs | One spin per pair | Flip |
+| `INDEPENDENT` | `System.independent(grid)` | Spherical, antipodal pairs | Two spins per pair | Flip |
+| `FIXED_DENSITY` | `System.fixed_density(grid)` | Spherical | Half the sites occupied | Swap |
+| `EUCLIDEAN` | `System.euclidean(grid, num_spins=...)` | Euclidean | `num_spins` sites occupied | Swap |
+
+`system.kind` reports the family; `kind.spherical`, `kind.antipodal` and
+`kind.fixed_density` answer the common questions about it.
 
 Spherical grids should have shape `(N, 3)` with Cartesian coordinates on the unit sphere. Euclidean grids should have shape `(N, d)`.
 
@@ -645,7 +649,7 @@ run, since this sets the physical scale for Euclidean grids.
 Built-in metadata can be rebuilt automatically:
 
 ```python
-loaded = gh.System.non_antipodal(grid)
+loaded = gh.System.fixed_density(grid)
 loaded.load("output/run.nc", rebuild_neighborhood=True)
 ```
 
@@ -686,7 +690,7 @@ result = system.greedy(max_steps=1000)
 
 ```python
 system = (
-    gh.System.non_antipodal(grid)
+    gh.System.fixed_density(grid)
     .compute_neighborhood(
         jump_distance=[0.485 * np.pi, 0.515 * np.pi],
         jump_weights=[1.0, 0.75],
@@ -750,7 +754,7 @@ repository root:
 ```bash
 python examples/spherical_complementary.py
 python examples/spherical_independent.py
-python examples/spherical_non_antipodal.py
+python examples/spherical_fixed_density.py
 python examples/euclidean_2d.py
 python examples/euclidean_3d.py
 python examples/gaussian_kernel.py

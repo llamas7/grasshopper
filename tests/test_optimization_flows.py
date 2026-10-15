@@ -49,8 +49,8 @@ class OptimizationFlowTests(unittest.TestCase):
         )
         return system
 
-    def make_non_antipodal_system(self) -> gh.System:
-        system = gh.System.non_antipodal(spherical_grid())
+    def make_fixed_density_system(self) -> gh.System:
+        system = gh.System.fixed_density(spherical_grid())
         system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
         system.array_init(
             np.array([True, False, True, False, True, False], dtype=bool)
@@ -138,7 +138,7 @@ class OptimizationFlowTests(unittest.TestCase):
 
     def test_metropolis_sweep_uses_spinflip_numba_hook_for_complementary(self) -> None:
         system = self.make_complementary_system()
-        engine = get_engine(system.config)
+        engine = get_engine(system.kind)
         energy_array = engine.grid_gen(system.current_system, system.neighborhood)
 
         with mock.patch(
@@ -198,7 +198,7 @@ class OptimizationFlowTests(unittest.TestCase):
         systems = [
             self.make_complementary_system(),
             self.make_independent_system(),
-            self.make_non_antipodal_system(),
+            self.make_fixed_density_system(),
             self.make_euclidean_system(),
         ]
 

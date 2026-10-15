@@ -28,7 +28,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("examples/output/spherical_non_antipodal"),
+        default=Path("examples/output/spherical_fixed_density"),
     )
     add_optimization_arguments(parser)
     return parser.parse_args(argv)
@@ -36,7 +36,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> gh.System:
     args = parse_args(argv)
-    system = gh.System.non_antipodal(paired_fibonacci_sphere(args.pairs))
+    system = gh.System.fixed_density(paired_fibonacci_sphere(args.pairs))
     system.compute_neighborhood(
         jump_distance=args.theta_over_pi * np.pi,
         kernel=gh.KernelSpec.cosine(),
@@ -51,11 +51,11 @@ def main(argv: Sequence[str] | None = None) -> gh.System:
         starting_temp=args.starting_temp,
         seed=args.seed + 1,
     )
-    report(system, title="Spherical non-antipodal example")
+    report(system, title="Spherical fixed-density example")
     output = save_spherical_plot(
         system,
         args.output_dir / "best_lawn.html",
-        title="Best non-antipodal lawn",
+        title="Best fixed-density lawn",
         show=args.show,
     )
     print(f"  plot: {output}")

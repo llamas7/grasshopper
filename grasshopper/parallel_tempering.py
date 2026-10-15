@@ -10,9 +10,9 @@ import numpy as np
 from .annealing import metropolis_sweep
 from .core import (
     Engine,
-    NonAntipodalNeighborhoodCSR,
+    FixedDensityNeighborhoodCSR,
     OccupancyState,
-    SystemConfig,
+    SystemKind,
 )
 from .engines import get_engine
 from .initialization import init_from_array, init_random, sync_occupancy
@@ -56,7 +56,7 @@ class ParallelTemperingResult:
 
 @dataclass
 class _WorkerSystem:
-    config: SystemConfig
+    kind: SystemKind
     neighborhood: Any
     num_spins: int
     antipodal: bool
@@ -104,7 +104,7 @@ def _share_array(array: np.ndarray) -> tuple[_SharedArraySpec, shared_memory.Sha
 
 
 def _share_csr_neighborhood(
-        neighborhood: NonAntipodalNeighborhoodCSR,
+        neighborhood: FixedDensityNeighborhoodCSR,
 ) -> tuple[_SharedCSRSpec, list[shared_memory.SharedMemory]]:
     specs: list[_SharedArraySpec] = []
     handles: list[shared_memory.SharedMemory] = []
@@ -153,7 +153,7 @@ def _attach_worker_neighborhood(
         neighborhood_context.total_weight
     )
     return (
-        NonAntipodalNeighborhoodCSR(
+        FixedDensityNeighborhoodCSR(
             indptr=indptr,
             neighbor_spins=neighbor_spins,
             contributions=contributions,
@@ -176,7 +176,7 @@ def _release_shared_memory(handles: list[shared_memory.SharedMemory]) -> None:
 
 
 def _init_worker_context(
-        config: SystemConfig,
+        kind: SystemKind,
         neighborhood_context: Any,
         num_spins: int,
         antipodal: bool,
@@ -184,7 +184,7 @@ def _init_worker_context(
     global _WORKER_CONTEXT
     neighborhood, shared_handles = _attach_worker_neighborhood(neighborhood_context)
     _WORKER_CONTEXT = {
-        "config": config,
+        "kind": kind,
         "neighborhood": neighborhood,
         "num_spins": int(num_spins),
         "antipodal": bool(antipodal),
@@ -336,7 +336,7 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
         np.random.seed(task.seed)
 
     system = _WorkerSystem(
-        config=_WORKER_CONTEXT["config"],
+        kind=_WORKER_CONTEXT["kind"],
         neighborhood=_WORKER_CONTEXT["neighborhood"],
         num_spins=_WORKER_CONTEXT["num_spins"],
         antipodal=_WORKER_CONTEXT["antipodal"],
@@ -347,7 +347,7 @@ def _run_replica_sweep_task(task: _ReplicaTask) -> _ReplicaSweepResult:
         occupancy=None if task.occupancy is None else task.occupancy.copy(),
     )
     energy_grid = task.energy_grid.copy()
-    engine = get_engine(system.config)
+    engine = get_engine(system.kind)
     acceptance = metropolis_sweep(
         system=system,
         energy_array=energy_grid,
@@ -457,7 +457,7 @@ def _parallel_tempering_impl(
         hot_temp,
     )
     num_replicas = int(ladder.size)
-    engine = get_engine(system.config)
+    engine = get_engine(system.kind)
     replicas = _make_replicas(system, engine, num_replicas, initial_states)
     energy_grids = [_recompute_replica(replica, engine) for replica in replicas]
 
@@ -477,7 +477,7 @@ def _parallel_tempering_impl(
     shared_memory_handles: list[shared_memory.SharedMemory] = []
     if n_workers > 1 and iterations > 0:
         neighborhood_context = system.neighborhood
-        if isinstance(system.neighborhood, NonAntipodalNeighborhoodCSR):
+        if isinstance(system.neighborhood, FixedDensityNeighborhoodCSR):
             neighborhood_context, shared_memory_handles = _share_csr_neighborhood(
                 system.neighborhood
             )
@@ -485,7 +485,7 @@ def _parallel_tempering_impl(
             max_workers=min(n_workers, num_replicas),
             initializer=_init_worker_context,
             initargs=(
-                system.config,
+                system.kind,
                 neighborhood_context,
                 system.num_spins,
                 system.antipodal,

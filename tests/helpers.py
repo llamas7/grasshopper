@@ -43,7 +43,7 @@ def euclidean_grid() -> np.ndarray:
 
 
 def exact_energy(system: gh.System) -> float:
-    return float(get_engine(system.config).energy(system.current_system, system.neighborhood))
+    return float(get_engine(system.kind).energy(system.current_system, system.neighborhood))
 
 
 def assert_fixed_density_consistent(testcase, system: gh.System) -> None:

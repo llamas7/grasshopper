@@ -74,7 +74,7 @@ def greedy_optimization(
     if min_delta < 0:
         raise ValueError(f"min_delta must be nonnegative, got {min_delta!r}.")
 
-    engine = get_engine(system.config)
+    engine = get_engine(system.kind)
     best_update = engine.best_update
     update = engine.update
 

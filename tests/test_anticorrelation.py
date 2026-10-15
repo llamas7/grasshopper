@@ -45,7 +45,7 @@ class AnticorrelationTests(unittest.TestCase):
 
     def test_zero_exact_and_exhaustive_move_updates(self):
         s = self.make_system(probabilities=[.3, .2, .5])
-        engine = get_engine(s.config)
+        engine = get_engine(s.kind)
         for bits in itertools.product((False, True), repeat=6):
             state = np.array(bits).reshape(3, 2)
             s.array_init(state)
@@ -74,7 +74,7 @@ class AnticorrelationTests(unittest.TestCase):
 
     def test_optimizers_clone_and_rebuild(self):
         s = self.make_system().random_init(seed=9)
-        engine = get_engine(s.config)
+        engine = get_engine(s.kind)
         s.anneal(starting_temp=1, final_temp=.1, steps=100, max_iterations=3, seed=10)
         s.greedy(max_steps=30)
         s.parallel_temper(num_replicas=3, iterations=3, sweep_steps=30,

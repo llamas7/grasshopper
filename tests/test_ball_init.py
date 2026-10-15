@@ -94,7 +94,7 @@ class BallInitializationTests(unittest.TestCase):
         self.assertEqual(system.num_spins, 1)
         self.assertTrue(system.current_system[12])
         assert_fixed_density_consistent(self, system)
-        sphere = gh.System.non_antipodal(spherical_grid())
+        sphere = gh.System.fixed_density(spherical_grid())
         with self.assertRaisesRegex(ValueError, "Euclidean"):
             sphere.ball_init(1)
 

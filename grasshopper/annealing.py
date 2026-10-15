@@ -174,7 +174,7 @@ def thermalize_system(
     Parameters
     ----------
     system : System
-        System object (must have system.config and system.neighborhood).
+        System object (must have system.kind and system.neighborhood).
         Uses and updates system.temperature.
     target_acceptance : float, optional
         Desired acceptance probability for SA start, by default 0.6.
@@ -209,7 +209,7 @@ def thermalize_system(
 
     rng_state = seed_numpy(seed)
     try:
-        engine = get_engine(system.config)
+        engine = get_engine(system.kind)
         grid_gen = engine.grid_gen
 
         # Ensure energy_array matches current configuration
@@ -300,7 +300,7 @@ def simulated_annealing(
 
     rng_state = seed_numpy(seed)
     try:
-        engine = get_engine(system.config)
+        engine = get_engine(system.kind)
         grid_gen = engine.grid_gen
 
         # Build initial energy grid consistent with current_system

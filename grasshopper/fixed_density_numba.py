@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from .core import NonAntipodalNeighborhoodCSR
+from .core import FixedDensityNeighborhoodCSR
 
 try:
     from numba import njit
@@ -126,7 +126,7 @@ def run_fixed_density_numba_sweep(
         raise ValueError(f"Temperature must be nonnegative, got {T!r}.")
     if system.occupancy is None:
         return None
-    if not isinstance(system.neighborhood, NonAntipodalNeighborhoodCSR):
+    if not isinstance(system.neighborhood, FixedDensityNeighborhoodCSR):
         return None
     if system.current_system is None or system.best_system is None:
         return None

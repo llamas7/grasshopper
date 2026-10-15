@@ -152,7 +152,7 @@ class ProbabilityTests(unittest.TestCase):
                 ),
             ),
             (
-                gh.System.non_antipodal(spherical_grid()),
+                gh.System.fixed_density(spherical_grid()),
                 np.array([True, False, True, False, True, False], dtype=bool),
             ),
             (
@@ -161,7 +161,7 @@ class ProbabilityTests(unittest.TestCase):
             ),
         ]
         for system, state in systems_and_states:
-            distance = np.pi / 2 if system.geometry == gh.Geometry.SPHERICAL else 1.0
+            distance = np.pi / 2 if system.kind.spherical else 1.0
             system.compute_neighborhood(distance)
             system.array_init(state)
             self.assertAlmostEqual(
@@ -239,8 +239,8 @@ class ProbabilityTests(unittest.TestCase):
         )
 
     def test_sparse_and_all_pairs_gaussians_agree_up_to_truncated_tail(self) -> None:
-        sparse = gh.System.non_antipodal(spherical_grid())
-        full = gh.System.non_antipodal(spherical_grid())
+        sparse = gh.System.fixed_density(spherical_grid())
+        full = gh.System.fixed_density(spherical_grid())
         sparse.compute_neighborhood(
             np.pi / 2,
             kernel=gh.KernelSpec.gaussian(0.3, cutoff=5.0),
@@ -298,7 +298,7 @@ class ProbabilityTests(unittest.TestCase):
             custom.probability(state, normalization="graph")
 
     def test_empty_lawn_zero_graph_weight_and_invalid_distances(self) -> None:
-        system = gh.System.non_antipodal(spherical_grid())
+        system = gh.System.fixed_density(spherical_grid())
         system.compute_neighborhood(np.pi / 3)
         with self.assertRaisesRegex(ZeroDivisionError, "zero occupied"):
             system.probability(np.zeros(6, dtype=bool))
@@ -369,18 +369,21 @@ class ProbabilityTests(unittest.TestCase):
         system.array_init(np.array([True, False, True], dtype=bool))
 
         legacy = system.to_dataset()
-        legacy.attrs["format_version"] = "4.0"
-        legacy.attrs["interaction_model"] = "inverse"
+        del legacy.attrs["kind"]
+        legacy.attrs.update(
+            format_version="4.0",
+            geometry="spherical",
+            constraint="antipodal",
+            interaction_model="inverse",
+            update_rule="flip",
+        )
         legacy_path = test_dir / "v4_complementary.nc"
         legacy.to_netcdf(legacy_path)
 
         loaded = gh.System.complementary(spherical_grid())
         loaded.load(legacy_path, rebuild_neighborhood=True)
 
-        self.assertEqual(
-            loaded.interaction_model,
-            gh.InteractionModel.COMPLEMENTARY,
-        )
+        self.assertIs(loaded.kind, gh.SystemKind.COMPLEMENTARY)
         self.assertAlmostEqual(loaded.current_energy, system.current_energy)
 
     def test_probabilities_survive_save_load_and_resave_without_neighborhood(self) -> None:
@@ -388,7 +391,7 @@ class ProbabilityTests(unittest.TestCase):
         constructors = (
             lambda: gh.System.complementary(spherical_grid()),
             lambda: gh.System.independent(spherical_grid()),
-            lambda: gh.System.non_antipodal(spherical_grid()),
+            lambda: gh.System.fixed_density(spherical_grid()),
             lambda: gh.System.euclidean(euclidean_grid(), num_spins=2),
         )
         keys = ("current_probability", "best_probability",

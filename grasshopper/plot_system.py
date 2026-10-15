@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .core import ConstraintModel, Geometry, SystemConfig
+from .core import SystemKind
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -731,7 +731,7 @@ def graph_euclidean_system(
 
 def plot_spin_system(
         *,
-        system_config: SystemConfig,
+        kind: SystemKind,
         grid_points: NDArray[np.float64],
         spin_states: NDArray[np.bool_] | None,
         fig_title: str = "",
@@ -746,12 +746,12 @@ def plot_spin_system(
         plot_figure: bool = True,
 ):
     """
-    Dispatcher for complementary, independent, non-antipodal, and Euclidean systems:
+    Dispatcher for complementary, independent, fixed-density, and Euclidean systems:
       - 'COMPLEMENTARY'       → single spin, antipodal
       - 'INDEPENDENT'   → two spins [A,B], antipodal
-      - 'NONANTIPODAL'  → single spin, no antipodal
+      - 'FIXED_DENSITY'  → single spin, no antipodal
     """
-    if system_config.geometry == Geometry.EUCLIDEAN:
+    if kind is SystemKind.EUCLIDEAN:
         return graph_euclidean_system(
             grid_points,
             spin_states,
@@ -769,7 +769,7 @@ def plot_spin_system(
     if spin_states is None:
         raise RuntimeError("Spin state is required for spherical system plots.")
 
-    if system_config.constraint == ConstraintModel.INDEPENDENT:
+    if kind is SystemKind.INDEPENDENT:
         return graph_independent_system(
             grid_points,
             spin_states,
@@ -778,7 +778,7 @@ def plot_spin_system(
             plot_figure=plot_figure,
         )
 
-    if system_config.antipodal:
+    if kind.antipodal:
         return graph_system(
             grid_points,
             spin_states,
