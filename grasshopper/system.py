@@ -181,77 +181,6 @@ class System:
         )
 
     @classmethod
-    def rectangular_lattice(
-        cls,
-        width: int,
-        height: int,
-        *,
-        num_spins: int | None = None,
-        density: float | None = None,
-        origin: tuple[float, float] = (0.0, 0.0),
-        center: bool = False,
-    ) -> "System":
-        """
-        Construct a 2D fixed-density Euclidean system on a rectangular lattice.
-
-        The candidate lattice has `width * height` sites, but the Euclidean
-        interaction scale is normalized from the occupied-site count resolved
-        from `num_spins` or `density`.
-        """
-        return cls.regular_lattice(
-            "rectangular", width, height,
-            num_spins=num_spins, density=density, origin=origin, center=center,
-        )
-
-    @classmethod
-    def triangular_lattice(
-        cls,
-        width: int,
-        height: int,
-        *,
-        num_spins: int | None = None,
-        density: float | None = None,
-        origin: tuple[float, float] = (0.0, 0.0),
-        center: bool = False,
-    ) -> "System":
-        """
-        Construct a compact triangular patch with ``width * height`` sites.
-
-        The lattice coordinates are normalized by occupied-site count by
-        default, so refining the candidate lattice does not change the physical
-        jump-distance scale when `num_spins` is unchanged.
-        """
-        return cls.regular_lattice(
-            "triangular", width, height,
-            num_spins=num_spins, density=density, origin=origin, center=center,
-        )
-
-    @classmethod
-    def hexagonal_lattice(
-        cls,
-        width: int,
-        height: int,
-        *,
-        num_spins: int | None = None,
-        density: float | None = None,
-        origin: tuple[float, float] = (0.0, 0.0),
-        center: bool = False,
-    ) -> "System":
-        """
-        Construct a compact honeycomb patch with ``2 * width * height`` sites.
-
-        Each hexagonal unit cell contributes two candidate sites. The default
-        Euclidean normalization uses the occupied-site count from `num_spins` or
-        `density`, not the total candidate-site count, to set cell length.
-        """
-        return cls.regular_lattice(
-            "hexagonal", width, height,
-            num_spins=num_spins, density=density, origin=origin, center=center,
-        )
-
-    honeycomb_lattice = hexagonal_lattice
-
-    @classmethod
     def fibonacci_lattice(
         cls,
         num_sites: int,
@@ -292,9 +221,12 @@ class System:
         """
         Construct a 2D fixed-density Euclidean system on a named regular lattice.
 
-        Supported lattice names include square, rectangular, triangular,
-        hexagonal, and honeycomb aliases. Default normalization uses the
-        occupied-site count resolved from `num_spins` or `density`.
+        ``lattice`` is ``"square"``, ``"rectangular"``, ``"triangular"`` or
+        ``"hexagonal"`` (alias ``"honeycomb"``); hexagonal patches have
+        ``2 * width * height`` sites, the others ``width * height``. Choose
+        ``num_spins`` or ``density`` (default: half filling). Coordinates are
+        scaled from the known lattice-cell area so each occupied site has area
+        ``1 / num_spins``, independent of how fine the candidate lattice is.
         """
         grid = regular_lattice(
             lattice,

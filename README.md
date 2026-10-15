@@ -123,7 +123,7 @@ system = gh.System.independent(grid)
 system = gh.System.fixed_density(grid)
 system = gh.System.euclidean(grid, num_spins=1000)
 system = gh.System.square_lattice(width=64, height=64, density=0.5)
-system = gh.System.hexagonal_lattice(width=32, height=32, num_spins=512)
+system = gh.System.regular_lattice("hexagonal", 32, 32, num_spins=512)
 ```
 
 There is also a lower-level constructor that takes the system kind:
@@ -154,9 +154,9 @@ and system in one call:
 
 ```python
 square = gh.System.square_lattice(64, 64, density=0.5)
-rectangular = gh.System.rectangular_lattice(64, 32, density=0.5)
-triangular = gh.System.triangular_lattice(64, 64, num_spins=2048)
-hexagonal = gh.System.hexagonal_lattice(32, 32, density=0.5)
+rectangular = gh.System.regular_lattice("rectangular", 64, 32, density=0.5)
+triangular = gh.System.regular_lattice("triangular", 64, 64, num_spins=2048)
+hexagonal = gh.System.regular_lattice("hexagonal", 32, 32, density=0.5)
 ```
 
 Euclidean systems use a fixed total occupied spin-cell area of `1.0` by
@@ -172,7 +172,7 @@ The exported grid builders, such as `gh.square_lattice(...)`, only create raw
 candidate-site coordinates. For example, `gh.square_lattice(100, 100)` still
 returns spacing `0.01`. The occupied-site normalization happens when those
 coordinates are wrapped in `System.euclidean(...)` or created through a
-`System.*_lattice(...)` constructor. To control a custom candidate geometry,
+`System.square_lattice(...)` / `System.regular_lattice(...)` constructor. To control a custom candidate geometry,
 build the raw coordinates directly and pass them to `System.euclidean(...)`;
 the system will still set the final physical scale from `num_spins`.
 
@@ -734,7 +734,7 @@ The package includes:
 For regular 2D lattices:
 
 ```python
-system = gh.System.hexagonal_lattice(16, 16, density=0.5)
+system = gh.System.regular_lattice("hexagonal", 16, 16, density=0.5)
 system.compute_neighborhood(jump_distance=0.30)
 system.plot_neighbors(selected_site=42)
 

@@ -173,7 +173,7 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(system.num_spins, 3)
         self.assertEqual(system.system_shape, 12)
 
-        honeycomb = gh.System.honeycomb_lattice(2, 2)
+        honeycomb = gh.System.regular_lattice("honeycomb", 2, 2)
         self.assertEqual(honeycomb.grid.shape, (8, 2))
         self.assertEqual(honeycomb.num_spins, 4)
 

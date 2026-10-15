@@ -128,12 +128,12 @@ class CompactLatticeTests(unittest.TestCase):
 
     def test_system_uses_lattice_cell_area_for_physical_spacing(self):
         # Area per site is sqrt(3)/2 * a^2 (triangular), 3sqrt(3)/4 * a^2 (honeycomb).
-        for constructor, area_factor in (
-            (gh.System.triangular_lattice, np.sqrt(3) / 2),
-            (gh.System.hexagonal_lattice, 3 * np.sqrt(3) / 4),
+        for lattice, area_factor in (
+            ("triangular", np.sqrt(3) / 2),
+            ("hexagonal", 3 * np.sqrt(3) / 4),
         ):
             for size in (12, 24):
-                system = constructor(size, size, num_spins=50)
+                system = gh.System.regular_lattice(lattice, size, size, num_spins=50)
                 distances = cKDTree(system.grid).query(system.grid, k=2)[0][:, 1]
                 np.testing.assert_allclose(distances, np.sqrt(1 / (50 * area_factor)))
                 self.assertEqual(system.num_spins, 50)
