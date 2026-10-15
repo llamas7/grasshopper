@@ -45,7 +45,11 @@ from .greedy import GreedyResult, greedy_optimization
 from .engines import get_engine
 from .parallel_tempering import ParallelTemperingResult, parallel_tempering
 from .plot_system import plot_spin_system, graph_boundary
-from .probability import calculate_probability, continuum_probability_prefactor
+from .probability import (
+    _cell_length,
+    calculate_probability,
+    continuum_probability_prefactor,
+)
 
 
 class System:
@@ -86,6 +90,7 @@ class System:
         config: SystemConfig,
         *,
         num_spins: int | None = None,
+        _prescaled: bool = False,
     ) -> None:
         """
         Construct a system from grid coordinates and an explicit configuration.
@@ -94,7 +99,7 @@ class System:
         conserved occupied volume is fixed to 1.0, so the candidate grid is
         scaled to estimated volume `len(grid) / num_spins`.
         """
-        self._initialize_grid(grid, config, num_spins)
+        self._initialize_grid(grid, config, num_spins, _prescaled)
         self._kernel = KernelSpec.cosine()
         self._kernel_is_custom = False
         self._jump_distance = None
@@ -272,9 +277,9 @@ class System:
         )
         # Use the known disk area rather than its enclosing bounding box.
         grid = (grid - origin) * np.sqrt(num_sites / occupied) + origin
-        system = cls.euclidean(grid, num_spins=occupied)
-        system._grid = grid
-        return system
+        return cls(
+            grid, SystemConfig.euclidean(), num_spins=occupied, _prescaled=True
+        )
 
     @classmethod
     def regular_lattice(
@@ -302,16 +307,17 @@ class System:
             origin=origin,
             center=center,
         )
-        system = cls.euclidean(
-            grid,
-            num_spins=cls._resolve_regular_lattice_num_spins(
-                len(grid), num_spins=num_spins, density=density,
-            ),
+        occupied = cls._resolve_regular_lattice_num_spins(
+            len(grid), num_spins=num_spins, density=density,
         )
         # Built-in grids have total lattice-cell area 1. Use that known area;
         # a bounding box includes empty corners around a circular patch.
-        system._grid = np.ascontiguousarray(grid * np.sqrt(len(grid) / system.num_spins))
-        return system
+        return cls(
+            grid * np.sqrt(len(grid) / occupied),
+            SystemConfig.euclidean(),
+            num_spins=occupied,
+            _prescaled=True,
+        )
 
     # --- Configuration and observables ---
 
@@ -414,9 +420,7 @@ class System:
     @current_system.setter
     def current_system(self, value: NDArray[np.bool_] | None) -> None:
         self._current_system = value
-        self._stored_probabilities.pop("current_probability", None)
-        self._stored_probabilities.pop("current_graph_probability", None)
-        self._stored_angle_probabilities.pop("current", None)
+        self._forget_stored_probabilities("current")
 
     @property
     def current_energy(self) -> float:
@@ -425,9 +429,7 @@ class System:
     @current_energy.setter
     def current_energy(self, value: float) -> None:
         self._current_energy = float(value)
-        self._stored_probabilities.pop("current_probability", None)
-        self._stored_probabilities.pop("current_graph_probability", None)
-        self._stored_angle_probabilities.pop("current", None)
+        self._forget_stored_probabilities("current")
 
     @property
     def best_system(self) -> NDArray[np.bool_] | None:
@@ -436,9 +438,7 @@ class System:
     @best_system.setter
     def best_system(self, value: NDArray[np.bool_] | None) -> None:
         self._best_system = value
-        self._stored_probabilities.pop("best_probability", None)
-        self._stored_probabilities.pop("best_graph_probability", None)
-        self._stored_angle_probabilities.pop("best", None)
+        self._forget_stored_probabilities("best")
 
     @property
     def best_energy(self) -> float:
@@ -447,9 +447,7 @@ class System:
     @best_energy.setter
     def best_energy(self, value: float) -> None:
         self._best_energy = float(value)
-        self._stored_probabilities.pop("best_probability", None)
-        self._stored_probabilities.pop("best_graph_probability", None)
-        self._stored_angle_probabilities.pop("best", None)
+        self._forget_stored_probabilities("best")
 
     def probability(
         self,
@@ -582,32 +580,17 @@ class System:
             if isinstance(coerced_jump_distance, tuple)
             else 1
         )
-        if (
-            jump_weights is None
-            and using_saved_distance
-            and self.jump_weights is not None
-        ):
-            coerced_jump_weights = self._coerce_jump_weights(
-                self.jump_weights,
-                distance_count,
-            )
-        else:
-            coerced_jump_weights = self._coerce_jump_weights(
-                jump_weights,
-                distance_count,
-            )
+        if jump_weights is None and using_saved_distance:
+            jump_weights = self.jump_weights
+        coerced_jump_weights = self._coerce_jump_weights(jump_weights, distance_count)
         self._jump_distance = coerced_jump_distance
         self._jump_weights = coerced_jump_weights
         resolved_kernel = self._resolve_kernel_for_compute(kernel)
         self._kernel = resolved_kernel
-        self._kernel_is_custom = self._is_custom_kernel(
-            resolved_kernel
-        )
+        self._kernel_is_custom = not isinstance(resolved_kernel, KernelSpec)
         metric = self._resolve_distance_metric_for_compute(distance_metric)
         self._distance_metric = metric
-        self._distance_metric_is_custom = (
-            self._is_custom_distance_metric(metric)
-        )
+        self._distance_metric_is_custom = not isinstance(metric, str)
 
         if shell_measure is not None:
             if not callable(shell_measure):
@@ -796,7 +779,7 @@ class System:
         center_index = np.flatnonzero(np.isclose(
             center_distances, center_distances.min(), rtol=1e-12, atol=0,
         ))[0]
-        h = self.num_spins ** (-1.0 / self.dimension)
+        h = _cell_length(self)
         distances = np.linalg.norm(self.grid - self.grid[center_index], axis=1) / h
         spins = (distances <= radius) | np.isclose(distances, radius, rtol=1e-12, atol=0)
         occupied = int(np.count_nonzero(spins))
@@ -1028,9 +1011,7 @@ class System:
                     "voronoi=True requires an initialized spin state. "
                     "Call random_init() or array_init() first."
                 )
-            voronoi_padding_distance = (1.0 / self.num_spins) ** (
-                1.0 / self.dimension
-            ) / 2.0
+            voronoi_padding_distance = _cell_length(self) / 2.0
         return plot_spin_system(
             system_config=self.config,
             grid_points=self.grid,
@@ -1073,7 +1054,6 @@ class System:
                 "plot_neighbors(selected_site=...) requires fixed-density "
                 "neighborhood rows with neighbor_spins and contributions."
             )
-        cell_length = (1.0 / self.num_spins) ** (1.0 / self.dimension)
         return plot_spin_system(
             system_config=self.config,
             grid_points=self.grid,
@@ -1082,7 +1062,7 @@ class System:
             selected_site=selected_site,
             selected_neighbor_spins=selected_row.neighbor_spins,
             selected_contributions=selected_row.contributions,
-            voronoi_padding_distance=cell_length / 2.0,
+            voronoi_padding_distance=_cell_length(self) / 2.0,
             plot_figure=plot_figure,
         )
 
@@ -1182,7 +1162,7 @@ class System:
 
     def save(self, save_path: str | Path) -> Path:
         """Write the NetCDF state file and return its path."""
-        _, netcdf_path = self._resolve_save_paths(save_path)
+        netcdf_path = self._resolve_save_path(save_path)
         self.to_dataset().to_netcdf(netcdf_path)
         return netcdf_path
 
@@ -1434,10 +1414,6 @@ class System:
         return KernelSpec.cosine()
 
     @staticmethod
-    def _is_custom_kernel(kernel: KernelSpec | Callable) -> bool:
-        return not isinstance(kernel, KernelSpec)
-
-    @staticmethod
     def _default_distance_metric(geometry: Geometry) -> str:
         return "euclidean" if geometry == Geometry.EUCLIDEAN else "spherical"
 
@@ -1455,10 +1431,6 @@ class System:
                 "Pass distance_metric=... to compute_neighborhood() to rebuild it."
             )
         return self._default_distance_metric(self.geometry)
-
-    @staticmethod
-    def _is_custom_distance_metric(distance_metric: DistanceMetric) -> bool:
-        return not isinstance(distance_metric, str)
 
     @staticmethod
     def _is_jump_distance_sequence(value: object) -> bool:
@@ -1593,7 +1565,10 @@ class System:
             num_spins = int(round(n_sites * density))
         elif num_spins is None:
             num_spins = n_sites // 2
+        return System._validate_occupied_count(num_spins, n_sites)
 
+    @staticmethod
+    def _validate_occupied_count(num_spins: int, n_sites: int) -> int:
         if isinstance(num_spins, bool) or not isinstance(num_spins, (int, np.integer)):
             raise TypeError("num_spins must be an integer.")
         resolved = int(num_spins)
@@ -1608,8 +1583,13 @@ class System:
         grid: NDArray[np.float64],
         config: SystemConfig,
         num_spins: int | None,
+        prescaled: bool,
     ) -> None:
-        """Validate the grid and set its physical scale and particle count."""
+        """Validate the grid and set its physical scale and particle count.
+
+        ``prescaled`` Euclidean grids already have occupied volume 1 and are
+        not rescaled by their bounding box.
+        """
         if not isinstance(config, SystemConfig):
             raise TypeError("config must be a SystemConfig.")
         if not isinstance(grid, np.ndarray):
@@ -1636,47 +1616,40 @@ class System:
         grid = np.ascontiguousarray(grid, dtype=np.float64)
 
         n_sites = int(grid.shape[0])
-        requested_num_spins = num_spins
 
         # Enforce even number of sites only for antipodal systems
-        if config.antipodal:
-            if n_sites % 2 != 0:
-                raise ValueError(
-                    "Complementary and independent systems require an even number "
-                    "of lattice sites. "
-                    "The second half of lattice sites are assumed to be antipodes of the first half."
-                )
-
-        if requested_num_spins is not None:
-            if config.geometry != Geometry.EUCLIDEAN:
-                raise ValueError(
-                    "num_spins can only be set explicitly for Euclidean systems. "
-                    "Spherical systems derive num_spins from the grid size."
-                )
-            if isinstance(requested_num_spins, bool) or not isinstance(
-                requested_num_spins, (int, np.integer)
-            ):
-                raise TypeError("num_spins must be an integer.")
-            resolved_num_spins = int(requested_num_spins)
-        else:
-            resolved_num_spins = n_sites // 2
-
-        if (
-            config.geometry == Geometry.EUCLIDEAN
-            and not 0 < resolved_num_spins < n_sites
-        ):
+        if config.antipodal and n_sites % 2 != 0:
             raise ValueError(
-                f"Euclidean num_spins must be between 1 and N-1 "
-                f"for N={n_sites} grid sites, got {resolved_num_spins}."
+                "Complementary and independent systems require an even number "
+                "of lattice sites. "
+                "The second half of lattice sites are assumed to be antipodes of the first half."
             )
 
+        if num_spins is not None and config.geometry != Geometry.EUCLIDEAN:
+            raise ValueError(
+                "num_spins can only be set explicitly for Euclidean systems. "
+                "Spherical systems derive num_spins from the grid size."
+            )
         if config.geometry == Geometry.EUCLIDEAN:
-            target_volume = n_sites / resolved_num_spins
-            grid = normalize_euclidean_grid(grid, target_volume=target_volume)
+            resolved_num_spins = self._validate_occupied_count(
+                n_sites // 2 if num_spins is None else num_spins, n_sites
+            )
+            if not prescaled:
+                grid = normalize_euclidean_grid(
+                    grid, target_volume=n_sites / resolved_num_spins
+                )
+        else:
+            resolved_num_spins = n_sites // 2
 
         self._grid = grid
         self._config = config
         self._num_spins = resolved_num_spins
+
+    def _forget_stored_probabilities(self, state: str) -> None:
+        """Drop probabilities loaded from disk once a state's spins or energy change."""
+        self._stored_probabilities.pop(f"{state}_probability", None)
+        self._stored_probabilities.pop(f"{state}_graph_probability", None)
+        self._stored_angle_probabilities.pop(state, None)
 
     def _refresh_energies_after_neighborhood_build(self) -> None:
         if self.neighborhood is None:
@@ -1773,17 +1746,13 @@ class System:
         )
 
     @staticmethod
-    def _resolve_save_paths(save_path: str | Path) -> tuple[Path, Path]:
+    def _resolve_save_path(save_path: str | Path) -> Path:
+        """Treat suffix-less paths and directories as folders for system_state.nc."""
         save_path = Path(save_path)
         if save_path.suffix == "" or save_path.is_dir():
-            save_dir = save_path
-            save_dir.mkdir(parents=True, exist_ok=True)
-            netcdf_path = save_dir / "system_state.nc"
-        else:
-            save_dir = save_path.parent
-            save_dir.mkdir(parents=True, exist_ok=True)
-            netcdf_path = save_path
-        return save_dir, netcdf_path
+            save_path = save_path / "system_state.nc"
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        return save_path
 
     def _neighborhood_storage_metadata(self) -> dict[str, int | str | bool]:
         neighborhood = self.neighborhood
@@ -1837,17 +1806,9 @@ class System:
 
     def _kernel_metadata(self) -> dict[str, str | bool | float]:
         kernel = self.kernel
-        custom = bool(self._kernel_is_custom)
-        attrs: dict[str, str | bool | float] = {"kernel_custom": custom}
-        if custom:
-            attrs["kernel_kind"] = "custom"
-            attrs["kernel_repr"] = repr(kernel)
-            return attrs
-        if not isinstance(kernel, KernelSpec):
-            attrs["kernel_kind"] = "custom"
-            attrs["kernel_custom"] = True
-            attrs["kernel_repr"] = repr(kernel)
-            return attrs
+        if self._kernel_is_custom or not isinstance(kernel, KernelSpec):
+            return {"kernel_custom": True, "kernel_kind": "custom", "kernel_repr": repr(kernel)}
+        attrs: dict[str, str | bool | float] = {"kernel_custom": False}
         attrs["kernel_kind"] = kernel.kind
         if kernel.kind == "gaussian":
             attrs["gaussian_sigma"] = float(kernel.sigma)
