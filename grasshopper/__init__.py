@@ -39,7 +39,7 @@ from .lattices import (
 from .metrics import DistanceMetric
 from .parallel_tempering import ParallelTemperingResult
 
-__version__ = "0.4.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "AnnealData",
