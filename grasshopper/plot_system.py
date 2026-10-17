@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import itertools
-from .core import ConstraintModel, Geometry, SystemConfig
+from .core import SystemKind
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -12,7 +11,6 @@ from numpy.typing import NDArray
 from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
 import scipy as sci
-import scipy.interpolate as spi
 
 
 # =========================
@@ -733,7 +731,7 @@ def graph_euclidean_system(
 
 def plot_spin_system(
         *,
-        system_config: SystemConfig,
+        kind: SystemKind,
         grid_points: NDArray[np.float64],
         spin_states: NDArray[np.bool_] | None,
         fig_title: str = "",
@@ -748,12 +746,12 @@ def plot_spin_system(
         plot_figure: bool = True,
 ):
     """
-    Dispatcher for complementary, independent, non-antipodal, and Euclidean systems:
+    Dispatcher for complementary, independent, fixed-density, and Euclidean systems:
       - 'COMPLEMENTARY'       → single spin, antipodal
       - 'INDEPENDENT'   → two spins [A,B], antipodal
-      - 'NONANTIPODAL'  → single spin, no antipodal
+      - 'FIXED_DENSITY'  → single spin, no antipodal
     """
-    if system_config.geometry == Geometry.EUCLIDEAN:
+    if kind is SystemKind.EUCLIDEAN:
         return graph_euclidean_system(
             grid_points,
             spin_states,
@@ -771,7 +769,7 @@ def plot_spin_system(
     if spin_states is None:
         raise RuntimeError("Spin state is required for spherical system plots.")
 
-    if system_config.constraint == ConstraintModel.INDEPENDENT:
+    if kind is SystemKind.INDEPENDENT:
         return graph_independent_system(
             grid_points,
             spin_states,
@@ -780,7 +778,7 @@ def plot_spin_system(
             plot_figure=plot_figure,
         )
 
-    if system_config.antipodal:
+    if kind.antipodal:
         return graph_system(
             grid_points,
             spin_states,
@@ -902,7 +900,6 @@ def graph_boundary(
         boundary_pointsB = extract_boundary_points(
             rotated_points, spin_states[:, 1], limit=limit, antipodal=antipodal
         )
-        process_data(boundary_pointsA)
         surface_pointsA = convert_ss(boundary_pointsA)
         surface_pointsB = convert_ss(boundary_pointsB)
         phi_movedA, theta_movedA, shiftA = process_data(surface_pointsA, get_shift=True)
@@ -932,58 +929,3 @@ def graph_boundary(
         plt.show()
     else:
         return fig, ax
-
-
-def plot_fft_spectrum(grid, spin_states, ax=None, label=None, limit_freq=140):
-    """
-    Plot the FFT spectrum of a spin configuration on a given axis.
-
-    Parameters:
-    - grid: underlying coordinate grid
-    - spin_states: configuration array
-    - ax: optional matplotlib axis to draw on (if None, creates one)
-    - label: optional label for the plot
-    - limit_freq: max frequency to display on x-axis
-    """
-    if ax is None:
-        fig, ax = plt.subplots()
-
-    fft_x, fft_y = fft_values(grid, spin_states)
-
-    ax.plot(fft_x, fft_y, label=label)
-    ax.set_xlim(0, limit_freq)
-    ax.set_ylim(0, 1.05 * np.max(fft_y))
-    ax.set_xlabel("Fourier mode")
-    ax.set_ylabel("Amplitude")
-    if label:
-        ax.legend()
-    return ax
-
-
-def fft_values(grid, spin_states, include_interp=False, antipodal=True):
-    rotated_grid, spins_xyz = rotate_grid_simple(grid, spin_states, antipodal=antipodal)
-    boundary_points = extract_boundary_points(
-        rotated_grid, spin_states, limit=0.65, antipodal=antipodal
-    )
-    ss_points = convert_ss(boundary_points)
-    phi_moved, theta_moved = process_data(ss_points)
-    ss_points = np.asarray([phi_moved, theta_moved])
-    spline = ss_points.copy()
-    N = len(spline)
-    T = 1 / N
-    argsort = np.argsort(spline[:, 0])
-    spline = spline[argsort]
-    interp1d = spi.interp1d(phi_moved, theta_moved)
-    x_values = np.linspace(np.min(phi_moved), np.max(phi_moved), N)
-    y_values = interp1d(x_values)
-    y_values -= np.mean(y_values)
-
-    fft_y = sci.fft.fft(y_values)
-    fft_x = sci.fft.fftfreq(len(x_values), T)[: N // 2]
-    fft_normalized = 2.0 / N * np.abs(fft_y[: N // 2])
-
-    if include_interp:
-        return fft_x, fft_normalized, interp1d
-
-    else:
-        return fft_x, fft_normalized

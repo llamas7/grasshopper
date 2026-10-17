@@ -9,11 +9,10 @@ from numpy.typing import NDArray
 from scipy.integrate import quad
 
 from .core import (
-    ConstraintModel,
-    Geometry,
     KernelSpec,
     Neighborhood,
-    NonAntipodalNeighborhoodCSR,
+    FixedDensityNeighborhoodCSR,
+    SystemKind,
 )
 from .engines import get_engine
 from .metrics import resolve_distance_metric
@@ -63,7 +62,7 @@ def _validate_spins(
             f"spins has shape {normalized.shape}, expected {expected_shape}."
         )
     if (
-        system.geometry == Geometry.EUCLIDEAN
+        system.kind is SystemKind.EUCLIDEAN
         and int(np.count_nonzero(normalized)) != system.num_spins
     ):
         raise ValueError(
@@ -74,13 +73,13 @@ def _validate_spins(
 
 
 def _cell_measure(system: "System") -> float:
-    if system.geometry == Geometry.SPHERICAL:
+    if system.kind.spherical:
         return float(4.0 * np.pi / len(system.grid))
     return float(1.0 / system.num_spins)
 
 
 def _cell_length(system: "System") -> float:
-    if system.geometry == Geometry.SPHERICAL:
+    if system.kind.spherical:
         return float(np.sqrt(_cell_measure(system)))
     return float(_cell_measure(system) ** (1.0 / system.dimension))
 
@@ -90,10 +89,7 @@ def _starting_measure(
     spins: NDArray[np.bool_] | None,
 ) -> float:
     cell_measure = _cell_measure(system)
-    if system.constraint in (
-        ConstraintModel.ANTIPODAL,
-        ConstraintModel.INDEPENDENT,
-    ):
+    if system.antipodal:
         return float(system.num_spins * cell_measure)
     if spins is None:
         occupied = system.num_spins
@@ -114,15 +110,15 @@ def _default_shell_geometry(
     if metric is None:
         metric_name = (
             "spherical"
-            if system.geometry == Geometry.SPHERICAL
+            if system.kind.spherical
             else "euclidean"
         )
     else:
         metric_name = resolve_distance_metric(metric).name
 
-    if system.geometry == Geometry.SPHERICAL and metric_name == "spherical":
+    if system.kind.spherical and metric_name == "spherical":
         return spherical_shell_measure, (0.0, float(np.pi))
-    if system.geometry == Geometry.EUCLIDEAN and metric_name == "euclidean":
+    if system.kind is SystemKind.EUCLIDEAN and metric_name == "euclidean":
         return (
             lambda radius: euclidean_shell_measure(radius, system.dimension),
             (0.0, float("inf")),
@@ -144,7 +140,7 @@ def _shell_geometry(
     if bounds is None:
         bounds = (
             (0.0, float(np.pi))
-            if system.geometry == Geometry.SPHERICAL
+            if system.kind.spherical
             else (0.0, float("inf"))
         )
     return system.shell_measure, bounds
@@ -229,7 +225,7 @@ def continuum_probability_prefactor(
         radial_normalization = 0.0
         for jump_distance, weight in zip(jump_distances, jump_weights):
             if jump_distance == 0 or (
-                system.geometry == Geometry.SPHERICAL
+                system.kind.spherical
                 and jump_distance in (0.0, float(np.pi))
             ):
                 raise ValueError(
@@ -257,7 +253,7 @@ def continuum_probability_prefactor(
 
 def _iter_contribution_arrays(system: "System"):
     neighborhood = system.neighborhood
-    if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
+    if isinstance(neighborhood, FixedDensityNeighborhoodCSR):
         yield neighborhood.contributions
         return
     if isinstance(neighborhood, list):
@@ -283,7 +279,7 @@ def graph_probability(
             )
 
     neighborhood = system.neighborhood
-    if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
+    if isinstance(neighborhood, FixedDensityNeighborhoodCSR):
         available_weight = float(np.sum(neighborhood.total_weight[spins]))
     elif isinstance(neighborhood, list):
         available_weight = float(sum(row.total_weight for row in neighborhood))
@@ -311,7 +307,7 @@ def calculate_probability(
         )
     if energy is None:
         energy = float(
-            get_engine(system.config).energy(normalized_spins, system.neighborhood)
+            get_engine(system.kind).energy(normalized_spins, system.neighborhood)
         )
 
     mode = str(normalization).lower().replace("_", "-")

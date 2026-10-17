@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from .core import ConstraintModel, KernelSpec, Neighborhood
+from .core import KernelSpec, Neighborhood, SystemKind
 from .probability import _validate_spins, continuum_probability_prefactor
 
 
 def validate_objective(system, angles, probabilities, kernel):
-    if system.constraint != ConstraintModel.INDEPENDENT:
+    if system.kind is not SystemKind.INDEPENDENT:
         raise ValueError("Anti-correlation objectives require System.independent.")
     angles = np.asarray(angles, dtype=float)
     if (angles.ndim != 1 or not angles.size or not np.all(np.isfinite(angles))

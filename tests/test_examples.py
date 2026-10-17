@@ -22,7 +22,7 @@ import gaussian_kernel
 import parallel_tempering
 import spherical_complementary
 import spherical_independent
-import spherical_non_antipodal
+import spherical_fixed_density
 from _common import paired_fibonacci_sphere
 
 
@@ -40,8 +40,8 @@ class ExampleSmokeTests(unittest.TestCase):
             system.best_energy,
             system.current_probability,
             system.best_probability,
-            system.current_graph_probability,
-            system.best_graph_probability,
+            system.probability(normalization="graph"),
+            system.probability("best", normalization="graph"),
         ):
             self.assertTrue(np.isfinite(value))
 
@@ -69,7 +69,7 @@ class ExampleSmokeTests(unittest.TestCase):
                 [6, 2],
             ),
             (
-                spherical_non_antipodal,
+                spherical_fixed_density,
                 "best_lawn.html",
                 [12],
             ),
@@ -92,12 +92,12 @@ class ExampleSmokeTests(unittest.TestCase):
                         str(output_dir),
                     ]
                 )
-                self.assertEqual(list(system.current_system.shape), expected_shape)
+                self.assertEqual(list(system.current_spins.shape), expected_shape)
                 self.assertTrue((output_dir / filename).exists())
                 self.assert_finite_summary(system)
-                if module is spherical_non_antipodal:
+                if module is spherical_fixed_density:
                     self.assertEqual(
-                        np.count_nonzero(system.current_system),
+                        np.count_nonzero(system.current_spins),
                         len(system.grid) // 2,
                     )
 
@@ -121,7 +121,7 @@ class ExampleSmokeTests(unittest.TestCase):
             ]
         )
         self.assertTrue((output_2d / "best_lawn.png").exists())
-        self.assertEqual(np.count_nonzero(system_2d.current_system), system_2d.num_spins)
+        self.assertEqual(np.count_nonzero(system_2d.current_spins), system_2d.num_spins)
         self.assert_finite_summary(system_2d)
 
         output_3d = self.example_dir("euclidean_3d")
@@ -141,7 +141,7 @@ class ExampleSmokeTests(unittest.TestCase):
             ]
         )
         self.assertTrue((output_3d / "best_lawn.png").exists())
-        self.assertEqual(np.count_nonzero(system_3d.current_system), system_3d.num_spins)
+        self.assertEqual(np.count_nonzero(system_3d.current_spins), system_3d.num_spins)
         self.assert_finite_summary(system_3d)
 
     def test_gaussian_example(self) -> None:
@@ -190,7 +190,7 @@ class ExampleSmokeTests(unittest.TestCase):
         )
         for filename in ("initial_lawn.png", "cold_final_lawn.png", "best_lawn.png"):
             self.assertTrue((output_dir / filename).exists())
-        self.assertEqual(np.count_nonzero(system.current_system), system.num_spins)
+        self.assertEqual(np.count_nonzero(system.current_spins), system.num_spins)
         self.assert_finite_summary(system)
 
     def test_seeded_example_is_deterministic(self) -> None:
@@ -216,7 +216,7 @@ class ExampleSmokeTests(unittest.TestCase):
             euclidean_2d,
             common_args + ["--output-dir", str(self.example_dir("second"))],
         )
-        np.testing.assert_array_equal(first.best_system, second.best_system)
+        np.testing.assert_array_equal(first.best_spins, second.best_spins)
         self.assertEqual(first.best_energy, second.best_energy)
 
 

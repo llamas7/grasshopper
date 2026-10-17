@@ -485,7 +485,7 @@ def build_system(
         jump_distance=case.jump_distance,
         kernel=kernel,
         distance_metric="euclidean",
-        silent=not args.verbose,
+        verbose=args.verbose,
     )
     return system, shape
 
@@ -673,7 +673,7 @@ def optimize_system(
             )
 
     # Refine from the best configuration, not merely the final chain state.
-    best_state = np.asarray(system.best_system, dtype=np.bool_).copy()
+    best_state = np.asarray(system.best_spins, dtype=np.bool_).copy()
     system.array_init(best_state)
     if args.greedy_steps > 0:
         result = system.greedy(
@@ -687,7 +687,7 @@ def optimize_system(
         summary.greedy_converged = bool(result.converged)
 
     # array_init performs an exact final energy reconstruction.
-    system.array_init(np.asarray(system.best_system, dtype=np.bool_).copy())
+    system.array_init(np.asarray(system.best_spins, dtype=np.bool_).copy())
     return summary
 
 
@@ -1101,7 +1101,7 @@ def collect_case(
     )
     optimization = optimize_system(system, args, case)
 
-    state = np.asarray(system.best_system, dtype=np.bool_).copy()
+    state = np.asarray(system.best_spins, dtype=np.bool_).copy()
     cell_length = case.occupied_count ** -0.5
     diagnostics, diagnostic_arrays = morphology_diagnostics(
         system.grid,
@@ -1120,7 +1120,7 @@ def collect_case(
     state_path = output_dir / "states" / f"{case.key}.npz"
     atomic_save_npz(
         state_path,
-        best_system=state.astype(np.uint8),
+        best_spins=state.astype(np.uint8),
         **diagnostic_arrays,
     )
     checkpoint_path: Path | None = None
@@ -1163,7 +1163,7 @@ def collect_case(
         "optimizer": args.optimizer,
         "energy": float(system.best_energy),
         "continuum_probability": float(system.best_probability),
-        "graph_probability": float(system.best_graph_probability),
+        "graph_probability": float(system.probability("best", normalization="graph")),
         "runtime_seconds": float(elapsed),
         "grid_path": relative_path(grid_path, output_dir),
         "state_path": relative_path(state_path, output_dir),

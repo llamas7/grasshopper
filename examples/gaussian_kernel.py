@@ -47,7 +47,6 @@ def build_system(args: argparse.Namespace, kernel: gh.KernelSpec) -> gh.System:
         jump_distance=args.jump_distance,
         kernel=kernel,
         distance_metric="euclidean",
-        silent=True,
     )
     return system
 
@@ -62,7 +61,7 @@ def main(argv: Sequence[str] | None = None) -> tuple[gh.System, gh.System]:
     )
 
     compact.random_init(seed=args.seed)
-    gaussian.array_init(compact.current_system.copy())
+    gaussian.array_init(compact.current_spins.copy())
     optimize(
         compact,
         steps=args.steps,

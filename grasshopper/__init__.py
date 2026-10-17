@@ -10,21 +10,17 @@ from .core import (
     AnnealData,
     AnnealRecord,
     AnnealSchedule,
-    ConstraintModel,
-    Geometry,
     GreedyHistory,
     GreedyRecord,
-    InteractionModel,
     KernelSpec,
     Neighborhood,
     NeighborhoodData,
-    NonAntipodalNeighborhood,
-    NonAntipodalNeighborhoodCSR,
+    FixedDensityNeighborhood,
+    FixedDensityNeighborhoodCSR,
     OccupancyState,
     ParallelTemperingHistory,
     ParallelTemperingRecord,
-    SystemConfig,
-    UpdateRule,
+    SystemKind,
 )
 from .greedy import GreedyResult
 from .lattices import (
@@ -39,27 +35,24 @@ from .lattices import (
 from .metrics import DistanceMetric
 from .parallel_tempering import ParallelTemperingResult
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 __all__ = [
     "AnnealData",
     "AnnealRecord",
     "AnnealSchedule",
-    "ConstraintModel",
     "DistanceMetric",
     "fibonacci_lattice",
-    "Geometry",
     "GreedyHistory",
     "GreedyRecord",
     "GreedyResult",
     "hexagonal_lattice",
     "honeycomb_lattice",
-    "InteractionModel",
     "KernelSpec",
     "Neighborhood",
     "NeighborhoodData",
-    "NonAntipodalNeighborhood",
-    "NonAntipodalNeighborhoodCSR",
+    "FixedDensityNeighborhood",
+    "FixedDensityNeighborhoodCSR",
     "OccupancyState",
     "ParallelTemperingHistory",
     "ParallelTemperingRecord",
@@ -67,10 +60,9 @@ __all__ = [
     "rectangular_lattice",
     "regular_lattice",
     "square_lattice",
-    "SystemConfig",
     "System",
+    "SystemKind",
     "triangular_lattice",
-    "UpdateRule",
     "__version__",
 ]
 

@@ -53,7 +53,6 @@ def main(argv: Sequence[str] | None = None) -> gh.System:
         jump_distance=args.jump_distance,
         kernel=gh.KernelSpec.cosine(),
         distance_metric="euclidean",
-        silent=True,
     )
     system.random_init(seed=args.seed)
     initial_energy = float(system.current_energy)
@@ -62,7 +61,7 @@ def main(argv: Sequence[str] | None = None) -> gh.System:
         args.output_dir / "initial_lawn.png",
         title="Initial lawn",
         show=False,
-        plot_current=True,
+        state="current",
         show_edges=True,
     )
 
@@ -83,7 +82,7 @@ def main(argv: Sequence[str] | None = None) -> gh.System:
         args.output_dir / "cold_final_lawn.png",
         title="Cold replica after parallel tempering",
         show=False,
-        plot_current=True,
+        state="current",
         show_edges=True,
     )
     best_output = save_euclidean_plot(

@@ -43,20 +43,20 @@ def euclidean_grid() -> np.ndarray:
 
 
 def exact_energy(system: gh.System) -> float:
-    return float(get_engine(system.config).energy(system.current_system, system.neighborhood))
+    return float(get_engine(system.kind).energy(system.current_spins, system.neighborhood))
 
 
 def assert_fixed_density_consistent(testcase, system: gh.System) -> None:
     testcase.assertIsNotNone(system.occupancy)
-    testcase.assertIsNotNone(system.current_system)
+    testcase.assertIsNotNone(system.current_spins)
     system.occupancy.validate(
-        n_sites=int(system.current_system.shape[0]),
+        n_sites=int(system.current_spins.shape[0]),
         expected_occupied=int(system.num_spins),
-        spin_array=system.current_system,
+        spin_array=system.current_spins,
     )
     testcase.assertEqual(
         int(system.occupancy.occupied.size),
-        int(np.count_nonzero(system.current_system)),
+        int(np.count_nonzero(system.current_spins)),
     )
 
 

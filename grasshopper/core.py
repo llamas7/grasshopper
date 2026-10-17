@@ -63,7 +63,7 @@ class Neighborhood:
 
 
 @dataclass(frozen=True)
-class NonAntipodalNeighborhood:
+class FixedDensityNeighborhood:
     neighbor_spins: NDArray[np.int_]
     contributions: NDArray[np.float64]
     total_weight: float
@@ -84,7 +84,7 @@ class NonAntipodalNeighborhood:
 
 
 @dataclass(frozen=True)
-class NonAntipodalNeighborhoodCSR:
+class FixedDensityNeighborhoodCSR:
     """CSR-style fixed-density neighborhood storage.
 
     The object keeps contiguous arrays for fast whole-system reductions while
@@ -99,8 +99,8 @@ class NonAntipodalNeighborhoodCSR:
     @classmethod
     def from_rows(
         cls,
-        rows: list[NonAntipodalNeighborhood],
-    ) -> "NonAntipodalNeighborhoodCSR":
+        rows: list[FixedDensityNeighborhood],
+    ) -> "FixedDensityNeighborhoodCSR":
         neighbor_rows = [
             np.ascontiguousarray(row.neighbor_spins, dtype=np.int64) for row in rows
         ]
@@ -141,9 +141,9 @@ class NonAntipodalNeighborhoodCSR:
     def __len__(self) -> int:
         return int(self.indptr.size - 1)
 
-    def __getitem__(self, index: int) -> NonAntipodalNeighborhood:
+    def __getitem__(self, index: int) -> FixedDensityNeighborhood:
         if not isinstance(index, (int, np.integer)):
-            raise TypeError("NonAntipodalNeighborhoodCSR indices must be integers.")
+            raise TypeError("FixedDensityNeighborhoodCSR indices must be integers.")
         index = int(index)
         if index < 0:
             index += len(self)
@@ -151,7 +151,7 @@ class NonAntipodalNeighborhoodCSR:
             raise IndexError(index)
         start = int(self.indptr[index])
         stop = int(self.indptr[index + 1])
-        return NonAntipodalNeighborhood(
+        return FixedDensityNeighborhood(
             neighbor_spins=self.neighbor_spins[start:stop],
             contributions=self.contributions[start:stop],
             total_weight=float(self.total_weight[index]),
@@ -159,7 +159,7 @@ class NonAntipodalNeighborhoodCSR:
 
 
 NeighborhoodData = (
-    list[Neighborhood] | list[NonAntipodalNeighborhood] | NonAntipodalNeighborhoodCSR
+    list[Neighborhood] | list[FixedDensityNeighborhood] | FixedDensityNeighborhoodCSR
 )
 
 
@@ -253,19 +253,19 @@ class OccupancyState:
 class SystemState:
     """Mutable spin state separated from static system metadata."""
 
-    current_system: NDArray[np.bool_] | None = None
+    current_spins: NDArray[np.bool_] | None = None
     current_energy: float = 0.0
-    best_system: NDArray[np.bool_] | None = None
+    best_spins: NDArray[np.bool_] | None = None
     best_energy: float = 0.0
     occupancy: OccupancyState | None = None
 
     def copy(self) -> "SystemState":
         return SystemState(
-            current_system=(
-                None if self.current_system is None else self.current_system.copy()
+            current_spins=(
+                None if self.current_spins is None else self.current_spins.copy()
             ),
             current_energy=float(self.current_energy),
-            best_system=None if self.best_system is None else self.best_system.copy(),
+            best_spins=None if self.best_spins is None else self.best_spins.copy(),
             best_energy=float(self.best_energy),
             occupancy=None if self.occupancy is None else self.occupancy.copy(),
         )
@@ -548,26 +548,30 @@ class ParallelTemperingHistory:
         )
 
 
-class Geometry(str, Enum):
-    SPHERICAL = "spherical"
-    EUCLIDEAN = "euclidean"
+class SystemKind(str, Enum):
+    """The supported system families.
 
+    ``COMPLEMENTARY`` and ``INDEPENDENT`` live on antipodal spherical grids and
+    flip spins. ``FIXED_DENSITY`` (spherical) and ``EUCLIDEAN`` keep a fixed
+    number of occupied sites and swap occupied with unoccupied sites.
+    """
 
-class ConstraintModel(str, Enum):
-    ANTIPODAL = "antipodal"
-    INDEPENDENT = "independent"
-    FIXED_DENSITY = "fixed-density"
-
-
-class InteractionModel(str, Enum):
     COMPLEMENTARY = "complementary"
     INDEPENDENT = "independent"
-    OCCUPANCY = "occupancy"
+    FIXED_DENSITY = "fixed-density"
+    EUCLIDEAN = "euclidean"
 
+    @property
+    def spherical(self) -> bool:
+        return self is not SystemKind.EUCLIDEAN
 
-class UpdateRule(str, Enum):
-    FLIP = "flip"
-    SWAP = "swap"
+    @property
+    def antipodal(self) -> bool:
+        return self in (SystemKind.COMPLEMENTARY, SystemKind.INDEPENDENT)
+
+    @property
+    def fixed_density(self) -> bool:
+        return self in (SystemKind.FIXED_DENSITY, SystemKind.EUCLIDEAN)
 
 
 @dataclass(frozen=True)
@@ -652,98 +656,3 @@ class KernelSpec:
         if isinstance(value, str):
             return cls(value)
         raise TypeError("kernel must be a KernelSpec, string, or callable.")
-
-
-@dataclass(frozen=True)
-class SystemConfig:
-    """Orthogonal system description for a supported optimizer/system family."""
-
-    geometry: Geometry
-    constraint: ConstraintModel
-    interaction_model: InteractionModel
-    update_rule: UpdateRule
-
-    def __post_init__(self) -> None:
-        supported = {
-            (
-                Geometry.SPHERICAL,
-                ConstraintModel.ANTIPODAL,
-                InteractionModel.COMPLEMENTARY,
-                UpdateRule.FLIP,
-            ),
-            (
-                Geometry.SPHERICAL,
-                ConstraintModel.INDEPENDENT,
-                InteractionModel.INDEPENDENT,
-                UpdateRule.FLIP,
-            ),
-            (
-                Geometry.SPHERICAL,
-                ConstraintModel.FIXED_DENSITY,
-                InteractionModel.OCCUPANCY,
-                UpdateRule.SWAP,
-            ),
-            (
-                Geometry.EUCLIDEAN,
-                ConstraintModel.FIXED_DENSITY,
-                InteractionModel.OCCUPANCY,
-                UpdateRule.SWAP,
-            ),
-        }
-        key = (
-            self.geometry,
-            self.constraint,
-            self.interaction_model,
-            self.update_rule,
-        )
-        if key not in supported:
-            raise ValueError(
-                "Unsupported system configuration: "
-                f"geometry={self.geometry.value}, "
-                f"constraint={self.constraint.value}, "
-                f"interaction_model={self.interaction_model.value}, "
-                f"update_rule={self.update_rule.value}."
-            )
-
-    @property
-    def antipodal(self) -> bool:
-        return self.constraint in (
-            ConstraintModel.ANTIPODAL,
-            ConstraintModel.INDEPENDENT,
-        )
-
-    @classmethod
-    def complementary(cls) -> "SystemConfig":
-        return cls(
-            geometry=Geometry.SPHERICAL,
-            constraint=ConstraintModel.ANTIPODAL,
-            interaction_model=InteractionModel.COMPLEMENTARY,
-            update_rule=UpdateRule.FLIP,
-        )
-
-    @classmethod
-    def independent(cls) -> "SystemConfig":
-        return cls(
-            geometry=Geometry.SPHERICAL,
-            constraint=ConstraintModel.INDEPENDENT,
-            interaction_model=InteractionModel.INDEPENDENT,
-            update_rule=UpdateRule.FLIP,
-        )
-
-    @classmethod
-    def non_antipodal(cls) -> "SystemConfig":
-        return cls(
-            geometry=Geometry.SPHERICAL,
-            constraint=ConstraintModel.FIXED_DENSITY,
-            interaction_model=InteractionModel.OCCUPANCY,
-            update_rule=UpdateRule.SWAP,
-        )
-
-    @classmethod
-    def euclidean(cls) -> "SystemConfig":
-        return cls(
-            geometry=Geometry.EUCLIDEAN,
-            constraint=ConstraintModel.FIXED_DENSITY,
-            interaction_model=InteractionModel.OCCUPANCY,
-            update_rule=UpdateRule.SWAP,
-        )

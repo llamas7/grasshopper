@@ -14,18 +14,14 @@ from .build_neighbors import build_neighborhood
 from .core import (
     AnnealData,
     AnnealSchedule,
-    ConstraintModel,
-    Geometry,
     GreedyHistory,
-    InteractionModel,
     KernelSpec,
     NeighborhoodData,
-    NonAntipodalNeighborhoodCSR,
+    FixedDensityNeighborhoodCSR,
     OccupancyState,
     ParallelTemperingHistory,
-    SystemConfig,
     SystemState,
-    UpdateRule,
+    SystemKind,
 )
 from .euclidean import (
     DistanceMetric,
@@ -45,7 +41,11 @@ from .greedy import GreedyResult, greedy_optimization
 from .engines import get_engine
 from .parallel_tempering import ParallelTemperingResult, parallel_tempering
 from .plot_system import plot_spin_system, graph_boundary
-from .probability import calculate_probability, continuum_probability_prefactor
+from .probability import (
+    _cell_length,
+    calculate_probability,
+    continuum_probability_prefactor,
+)
 
 
 class System:
@@ -56,7 +56,7 @@ class System:
     ``greedy()``, or ``parallel_temper()``. ``thermalize()`` can first tune the
     temperature. Setup methods return the system so they can be chained.
 
-    ``current_system`` and ``best_system`` hold the spin arrays. Energies are
+    ``current_spins`` and ``best_spins`` hold the spin arrays. Energies are
     unnormalized; use ``current_probability`` and ``best_probability`` for
     normalized Grasshopper values. Optimization histories are available as
     ``anneal_data``, ``greedy_history``, and ``parallel_tempering_history``.
@@ -75,26 +75,27 @@ class System:
     the grid and neighborhood.
     """
 
-    _SAVE_FORMAT_VERSION = "6.0"
-    _SUPPORTED_SAVE_FORMAT_VERSIONS = {"4.0", "5.0", "6.0"}
+    _SAVE_FORMAT_VERSION = "7.0"
+    _SUPPORTED_SAVE_FORMAT_VERSIONS = {"4.0", "5.0", "6.0", "7.0"}
 
     # --- Construction ---
 
     def __init__(
         self,
         grid: NDArray[np.float64],
-        config: SystemConfig,
+        kind: SystemKind | str,
         *,
         num_spins: int | None = None,
+        _prescaled: bool = False,
     ) -> None:
         """
-        Construct a system from grid coordinates and an explicit configuration.
+        Construct a system of the given ``kind`` from grid coordinates.
 
         For Euclidean configs, `num_spins` is the occupied-site count. The
         conserved occupied volume is fixed to 1.0, so the candidate grid is
         scaled to estimated volume `len(grid) / num_spins`.
         """
-        self._initialize_grid(grid, config, num_spins)
+        self._initialize_grid(grid, kind, num_spins, _prescaled)
         self._kernel = KernelSpec.cosine()
         self._kernel_is_custom = False
         self._jump_distance = None
@@ -107,9 +108,9 @@ class System:
         self._radial_bounds = None
         self._neighborhood = None
         self._initialized = False
-        self._current_system = None
+        self._current_spins = None
         self._current_energy = 0.0
-        self._best_system = None
+        self._best_spins = None
         self._best_energy = 0.0
         self._occupancy = None
         self._temperature = AnnealSchedule().starting_temp
@@ -122,17 +123,17 @@ class System:
     @classmethod
     def complementary(cls, grid: NDArray[np.float64]) -> "System":
         """Construct a spherical antipodal complementary system."""
-        return cls(grid, config=SystemConfig.complementary())
+        return cls(grid, SystemKind.COMPLEMENTARY)
 
     @classmethod
     def independent(cls, grid: NDArray[np.float64]) -> "System":
         """Construct a spherical independent-spin system."""
-        return cls(grid, config=SystemConfig.independent())
+        return cls(grid, SystemKind.INDEPENDENT)
 
     @classmethod
-    def non_antipodal(cls, grid: NDArray[np.float64]) -> "System":
-        """Construct a spherical fixed-density non-antipodal system."""
-        return cls(grid, config=SystemConfig.non_antipodal())
+    def fixed_density(cls, grid: NDArray[np.float64]) -> "System":
+        """Construct a spherical fixed-density system (half the sites occupied)."""
+        return cls(grid, SystemKind.FIXED_DENSITY)
 
     @classmethod
     def euclidean(
@@ -151,7 +152,7 @@ class System:
         """
         return cls(
             grid,
-            config=SystemConfig.euclidean(),
+            SystemKind.EUCLIDEAN,
             num_spins=num_spins,
         )
 
@@ -180,77 +181,6 @@ class System:
         )
 
     @classmethod
-    def rectangular_lattice(
-        cls,
-        width: int,
-        height: int,
-        *,
-        num_spins: int | None = None,
-        density: float | None = None,
-        origin: tuple[float, float] = (0.0, 0.0),
-        center: bool = False,
-    ) -> "System":
-        """
-        Construct a 2D fixed-density Euclidean system on a rectangular lattice.
-
-        The candidate lattice has `width * height` sites, but the Euclidean
-        interaction scale is normalized from the occupied-site count resolved
-        from `num_spins` or `density`.
-        """
-        return cls.regular_lattice(
-            "rectangular", width, height,
-            num_spins=num_spins, density=density, origin=origin, center=center,
-        )
-
-    @classmethod
-    def triangular_lattice(
-        cls,
-        width: int,
-        height: int,
-        *,
-        num_spins: int | None = None,
-        density: float | None = None,
-        origin: tuple[float, float] = (0.0, 0.0),
-        center: bool = False,
-    ) -> "System":
-        """
-        Construct a compact triangular patch with ``width * height`` sites.
-
-        The lattice coordinates are normalized by occupied-site count by
-        default, so refining the candidate lattice does not change the physical
-        jump-distance scale when `num_spins` is unchanged.
-        """
-        return cls.regular_lattice(
-            "triangular", width, height,
-            num_spins=num_spins, density=density, origin=origin, center=center,
-        )
-
-    @classmethod
-    def hexagonal_lattice(
-        cls,
-        width: int,
-        height: int,
-        *,
-        num_spins: int | None = None,
-        density: float | None = None,
-        origin: tuple[float, float] = (0.0, 0.0),
-        center: bool = False,
-    ) -> "System":
-        """
-        Construct a compact honeycomb patch with ``2 * width * height`` sites.
-
-        Each hexagonal unit cell contributes two candidate sites. The default
-        Euclidean normalization uses the occupied-site count from `num_spins` or
-        `density`, not the total candidate-site count, to set cell length.
-        """
-        return cls.regular_lattice(
-            "hexagonal", width, height,
-            num_spins=num_spins, density=density, origin=origin, center=center,
-        )
-
-    honeycomb_lattice = hexagonal_lattice
-
-    @classmethod
     def fibonacci_lattice(
         cls,
         num_sites: int,
@@ -272,9 +202,9 @@ class System:
         )
         # Use the known disk area rather than its enclosing bounding box.
         grid = (grid - origin) * np.sqrt(num_sites / occupied) + origin
-        system = cls.euclidean(grid, num_spins=occupied)
-        system._grid = grid
-        return system
+        return cls(
+            grid, SystemKind.EUCLIDEAN, num_spins=occupied, _prescaled=True
+        )
 
     @classmethod
     def regular_lattice(
@@ -291,9 +221,12 @@ class System:
         """
         Construct a 2D fixed-density Euclidean system on a named regular lattice.
 
-        Supported lattice names include square, rectangular, triangular,
-        hexagonal, and honeycomb aliases. Default normalization uses the
-        occupied-site count resolved from `num_spins` or `density`.
+        ``lattice`` is ``"square"``, ``"rectangular"``, ``"triangular"`` or
+        ``"hexagonal"`` (alias ``"honeycomb"``); hexagonal patches have
+        ``2 * width * height`` sites, the others ``width * height``. Choose
+        ``num_spins`` or ``density`` (default: half filling). Coordinates are
+        scaled from the known lattice-cell area so each occupied site has area
+        ``1 / num_spins``, independent of how fine the candidate lattice is.
         """
         grid = regular_lattice(
             lattice,
@@ -302,26 +235,24 @@ class System:
             origin=origin,
             center=center,
         )
-        system = cls.euclidean(
-            grid,
-            num_spins=cls._resolve_regular_lattice_num_spins(
-                len(grid), num_spins=num_spins, density=density,
-            ),
+        occupied = cls._resolve_regular_lattice_num_spins(
+            len(grid), num_spins=num_spins, density=density,
         )
         # Built-in grids have total lattice-cell area 1. Use that known area;
         # a bounding box includes empty corners around a circular patch.
-        system._grid = np.ascontiguousarray(grid * np.sqrt(len(grid) / system.num_spins))
-        return system
+        return cls(
+            grid * np.sqrt(len(grid) / occupied),
+            SystemKind.EUCLIDEAN,
+            num_spins=occupied,
+            _prescaled=True,
+        )
 
     # --- Configuration and observables ---
 
     def __repr__(self) -> str:
         return (
             "System("
-            f"geometry={self.geometry.value!r}, "
-            f"constraint={self.constraint.value!r}, "
-            f"interaction_model={self.interaction_model.value!r}, "
-            f"update_rule={self.update_rule.value!r}, "
+            f"kind={self.kind.value!r}, "
             f"grid_shape={tuple(int(dim) for dim in self.grid.shape)!r}, "
             f"jump_distance={self.jump_distance!r}, "
             f"kernel={self._kernel_display(self.kernel)!r}, "
@@ -332,8 +263,8 @@ class System:
         )
 
     @property
-    def config(self) -> SystemConfig:
-        return self._config
+    def kind(self) -> SystemKind:
+        return self._kind
 
     @property
     def grid(self) -> NDArray[np.float64]:
@@ -346,22 +277,6 @@ class System:
     @property
     def jump_weights(self) -> tuple[float, ...] | None:
         return self._jump_weights
-
-    @property
-    def geometry(self) -> Geometry:
-        return self.config.geometry
-
-    @property
-    def constraint(self) -> ConstraintModel:
-        return self.config.constraint
-
-    @property
-    def interaction_model(self) -> InteractionModel:
-        return self.config.interaction_model
-
-    @property
-    def update_rule(self) -> UpdateRule:
-        return self.config.update_rule
 
     @property
     def kernel(self) -> KernelSpec | Callable | None:
@@ -381,7 +296,7 @@ class System:
 
     @property
     def antipodal(self) -> bool:
-        return self.config.antipodal
+        return self.kind.antipodal
 
     @property
     def initialized(self) -> bool:
@@ -401,22 +316,20 @@ class System:
 
     @property
     def system_shape(self) -> int | tuple[int, ...] | None:
-        if self.constraint == ConstraintModel.ANTIPODAL:
+        if self.kind is SystemKind.COMPLEMENTARY:
             return self.num_spins
-        if self.constraint == ConstraintModel.INDEPENDENT:
+        if self.kind is SystemKind.INDEPENDENT:
             return (self.num_spins, 2)
         return len(self.grid)
 
     @property
-    def current_system(self) -> NDArray[np.bool_] | None:
-        return self._current_system
+    def current_spins(self) -> NDArray[np.bool_] | None:
+        return self._current_spins
 
-    @current_system.setter
-    def current_system(self, value: NDArray[np.bool_] | None) -> None:
-        self._current_system = value
-        self._stored_probabilities.pop("current_probability", None)
-        self._stored_probabilities.pop("current_graph_probability", None)
-        self._stored_angle_probabilities.pop("current", None)
+    @current_spins.setter
+    def current_spins(self, value: NDArray[np.bool_] | None) -> None:
+        self._current_spins = value
+        self._forget_stored_probabilities("current")
 
     @property
     def current_energy(self) -> float:
@@ -425,20 +338,16 @@ class System:
     @current_energy.setter
     def current_energy(self, value: float) -> None:
         self._current_energy = float(value)
-        self._stored_probabilities.pop("current_probability", None)
-        self._stored_probabilities.pop("current_graph_probability", None)
-        self._stored_angle_probabilities.pop("current", None)
+        self._forget_stored_probabilities("current")
 
     @property
-    def best_system(self) -> NDArray[np.bool_] | None:
-        return self._best_system
+    def best_spins(self) -> NDArray[np.bool_] | None:
+        return self._best_spins
 
-    @best_system.setter
-    def best_system(self, value: NDArray[np.bool_] | None) -> None:
-        self._best_system = value
-        self._stored_probabilities.pop("best_probability", None)
-        self._stored_probabilities.pop("best_graph_probability", None)
-        self._stored_angle_probabilities.pop("best", None)
+    @best_spins.setter
+    def best_spins(self, value: NDArray[np.bool_] | None) -> None:
+        self._best_spins = value
+        self._forget_stored_probabilities("best")
 
     @property
     def best_energy(self) -> float:
@@ -447,36 +356,34 @@ class System:
     @best_energy.setter
     def best_energy(self, value: float) -> None:
         self._best_energy = float(value)
-        self._stored_probabilities.pop("best_probability", None)
-        self._stored_probabilities.pop("best_graph_probability", None)
-        self._stored_angle_probabilities.pop("best", None)
+        self._forget_stored_probabilities("best")
 
     def probability(
         self,
-        spins: NDArray[np.bool_] | None = None,
+        spins: NDArray[np.bool_] | str = "current",
         *,
         normalization: str = "continuum",
     ) -> float:
-        """Return the Grasshopper probability for a spin configuration."""
-        if spins is None:
-            return self._state_probability("current", normalization)
+        """Return the Grasshopper probability of a spin configuration.
+
+        ``spins`` is ``"current"``, ``"best"``, or an explicit spin array.
+        ``normalization`` is ``"continuum"`` (default) or ``"graph"``.
+        """
+        if isinstance(spins, str):
+            if spins not in ("current", "best"):
+                raise ValueError("spins must be 'current', 'best', or a spin array.")
+            return self._state_probability(spins, normalization)
         return calculate_probability(self, spins, normalization=normalization)
 
     @property
     def current_probability(self) -> float:
+        """Continuum probability of ``current_spins``."""
         return self._state_probability("current", "continuum")
 
     @property
     def best_probability(self) -> float:
+        """Continuum probability of ``best_spins``."""
         return self._state_probability("best", "continuum")
-
-    @property
-    def current_graph_probability(self) -> float:
-        return self._state_probability("current", "graph")
-
-    @property
-    def best_graph_probability(self) -> float:
-        return self._state_probability("best", "graph")
 
     @property
     def anneal_data(self) -> AnnealData:
@@ -497,8 +404,8 @@ class System:
     def state_summary(self) -> dict[str, object]:
         """Return a compact snapshot of system configuration and readiness."""
         neighborhood_built = self.neighborhood is not None
-        has_current_system = self.current_system is not None
-        has_best_system = self.best_system is not None
+        has_current_spins = self.current_spins is not None
+        has_best_spins = self.best_spins is not None
         kernel = self.kernel
         metric = self.distance_metric
         kernel_summary = (
@@ -512,18 +419,15 @@ class System:
             else metric if isinstance(metric, str) or metric is None else repr(metric)
         )
         return {
-            "geometry": self.geometry.value,
-            "constraint": self.constraint.value,
-            "interaction_model": self.interaction_model.value,
-            "update_rule": self.update_rule.value,
+            "kind": self.kind.value,
             "site_count": int(self.grid.shape[0]),
             "num_spins": int(self.num_spins),
             "dimension": int(self.dimension),
             "system_shape": self.system_shape,
             "neighborhood_built": neighborhood_built,
             "initialized": bool(self.initialized),
-            "has_current_system": has_current_system,
-            "has_best_system": has_best_system,
+            "has_current_spins": has_current_spins,
+            "has_best_spins": has_best_spins,
             "ready": neighborhood_built and bool(self.initialized),
             "jump_distance": self.jump_distance,
             "jump_weights": self.jump_weights,
@@ -558,7 +462,7 @@ class System:
         *,
         jump_weights: Sequence[float] | None = None,
         kernel: KernelSpec | str | Callable | None = None,
-        silent: bool = True,
+        verbose: bool = False,
         distance_metric: DistanceMetric | None = None,
         shell_measure: Callable[[float], float] | None = None,
         radial_bounds: tuple[float, float] | None = None,
@@ -582,32 +486,17 @@ class System:
             if isinstance(coerced_jump_distance, tuple)
             else 1
         )
-        if (
-            jump_weights is None
-            and using_saved_distance
-            and self.jump_weights is not None
-        ):
-            coerced_jump_weights = self._coerce_jump_weights(
-                self.jump_weights,
-                distance_count,
-            )
-        else:
-            coerced_jump_weights = self._coerce_jump_weights(
-                jump_weights,
-                distance_count,
-            )
+        if jump_weights is None and using_saved_distance:
+            jump_weights = self.jump_weights
+        coerced_jump_weights = self._coerce_jump_weights(jump_weights, distance_count)
         self._jump_distance = coerced_jump_distance
         self._jump_weights = coerced_jump_weights
         resolved_kernel = self._resolve_kernel_for_compute(kernel)
         self._kernel = resolved_kernel
-        self._kernel_is_custom = self._is_custom_kernel(
-            resolved_kernel
-        )
+        self._kernel_is_custom = not isinstance(resolved_kernel, KernelSpec)
         metric = self._resolve_distance_metric_for_compute(distance_metric)
         self._distance_metric = metric
-        self._distance_metric_is_custom = (
-            self._is_custom_distance_metric(metric)
-        )
+        self._distance_metric_is_custom = not isinstance(metric, str)
 
         if shell_measure is not None:
             if not callable(shell_measure):
@@ -627,17 +516,17 @@ class System:
                 radial_bounds
             )
 
-        if self.geometry == Geometry.EUCLIDEAN:
+        if self.kind is SystemKind.EUCLIDEAN:
             rows = build_euclidean_neighborhood(
                 self.grid,
                 self.jump_distance,
                 kernel=resolved_kernel,
-                silent=silent,
+                silent=not verbose,
                 distance_metric=metric,
                 occupied_sites=self.num_spins,
             )
             self._neighborhood = (
-                NonAntipodalNeighborhoodCSR.from_rows(rows)
+                FixedDensityNeighborhoodCSR.from_rows(rows)
             )
             self._refresh_energies_after_neighborhood_build()
             return self
@@ -647,12 +536,12 @@ class System:
             self.jump_distance,
             antipodal=self.antipodal,
             kernel=resolved_kernel,
-            silent=silent,
+            silent=not verbose,
             distance_metric=metric,
             jump_weights=self.jump_weights,
         )
         self._neighborhood = (
-            rows if self.antipodal else NonAntipodalNeighborhoodCSR.from_rows(rows)
+            rows if self.antipodal else FixedDensityNeighborhoodCSR.from_rows(rows)
         )
         self._refresh_energies_after_neighborhood_build()
         return self
@@ -690,10 +579,10 @@ class System:
         self._stored_probabilities.clear()
         self._stored_angle_probabilities.clear()
         self._refresh_energies_after_neighborhood_build()
-        if self.current_system is not None and (
-            self.best_system is None or self.current_energy > self.best_energy
+        if self.current_spins is not None and (
+            self.best_spins is None or self.current_energy > self.best_energy
         ):
-            self.best_system = self.current_system.copy()
+            self.best_spins = self.current_spins.copy()
             self.best_energy = self.current_energy
         return self
 
@@ -702,12 +591,12 @@ class System:
         from .anticorrelation import component_probabilities
         if self.sampling_probabilities is None:
             raise RuntimeError("Build an anticorrelation objective first.")
-        state = "current" if spins is None or spins is self.current_system else (
-            "best" if spins is self.best_system else None
+        state = "current" if spins is None or spins is self.current_spins else (
+            "best" if spins is self.best_spins else None
         )
         if self.neighborhood is None and state in self._stored_angle_probabilities:
             return np.array(self._stored_angle_probabilities[state], copy=True)
-        return component_probabilities(self, self.current_system if spins is None else spins)
+        return component_probabilities(self, self.current_spins if spins is None else spins)
 
     def clone(self) -> "System":
         """Copy spins and histories while sharing the grid and neighborhood."""
@@ -715,9 +604,9 @@ class System:
         clone.__dict__ = self.__dict__.copy()
         clone._stored_probabilities = self._stored_probabilities.copy()
         clone._stored_angle_probabilities = {k: tuple(v) for k, v in self._stored_angle_probabilities.items()}
-        state = self.snapshot_state()
-        clone._current_system = state.current_system
-        clone._best_system = state.best_system
+        state = self._snapshot_state()
+        clone._current_spins = state.current_spins
+        clone._best_spins = state.best_spins
         clone._occupancy = state.occupancy
         clone._anneal_data = self.anneal_data.copy()
         clone._greedy_history = self.greedy_history.copy()
@@ -727,18 +616,18 @@ class System:
     def __copy__(self) -> "System":
         return self.clone()
 
-    def set_occupancy(self, occupancy: OccupancyState | None) -> None:
+    def _set_occupancy(self, occupancy: OccupancyState | None) -> None:
         """Attach fixed-density occupancy lists."""
         self._occupancy = None if occupancy is None else occupancy.copy()
 
-    def sync_occupancy_from_spins(self) -> None:
-        """Rebuild occupied/unoccupied lists from current_system."""
-        if self.current_system is None:
-            self.set_occupancy(None)
+    def _sync_occupancy_from_spins(self) -> None:
+        """Rebuild occupied/unoccupied lists from current_spins."""
+        if self.current_spins is None:
+            self._set_occupancy(None)
             return
-        occupancy = OccupancyState.from_spin_array(self.current_system)
+        occupancy = OccupancyState.from_spin_array(self.current_spins)
         if (
-            self.geometry == Geometry.EUCLIDEAN
+            self.kind is SystemKind.EUCLIDEAN
             and occupancy.occupied.size != self.num_spins
         ):
             raise ValueError(
@@ -746,26 +635,27 @@ class System:
             )
         self._occupancy = occupancy
 
-    def snapshot_state(self) -> SystemState:
+    def _snapshot_state(self) -> SystemState:
         """Return a detached copy of mutable spin state."""
         return SystemState(
-            current_system=self.current_system,
+            current_spins=self.current_spins,
             current_energy=self.current_energy,
-            best_system=self.best_system,
+            best_spins=self.best_spins,
             best_energy=self.best_energy,
             occupancy=self.occupancy,
         ).copy()
 
-    def restore_state(self, state: SystemState) -> None:
+    def _restore_state(self, state: SystemState) -> None:
         """Restore mutable spin state from a snapshot."""
         state = state.copy()
-        self.current_system = state.current_system
+        self.current_spins = state.current_spins
         self.current_energy = state.current_energy
-        self.best_system = state.best_system
+        self.best_spins = state.best_spins
         self.best_energy = state.best_energy
         self._occupancy = state.occupancy
 
     def random_init(self, seed: Seed = None) -> "System":
+        """Initialize a random spin state (fixed density keeps ``num_spins`` occupied)."""
         self._require_neighborhood()
         init_random(self, seed=seed)
         self._initialized = True
@@ -784,7 +674,7 @@ class System:
         Build the neighborhood before calling this method. Radius zero selects
         the center site; a ball covering every site is not a valid swap system.
         """
-        if self.geometry != Geometry.EUCLIDEAN:
+        if self.kind is not SystemKind.EUCLIDEAN:
             raise ValueError("ball_init() requires a Euclidean grid.")
         self._require_neighborhood()
         radius = float(radius)
@@ -796,7 +686,7 @@ class System:
         center_index = np.flatnonzero(np.isclose(
             center_distances, center_distances.min(), rtol=1e-12, atol=0,
         ))[0]
-        h = self.num_spins ** (-1.0 / self.dimension)
+        h = _cell_length(self)
         distances = np.linalg.norm(self.grid - self.grid[center_index], axis=1) / h
         spins = (distances <= radius) | np.isclose(distances, radius, rtol=1e-12, atol=0)
         occupied = int(np.count_nonzero(spins))
@@ -811,8 +701,8 @@ class System:
             self.grid * (self.num_spins / occupied) ** (1.0 / self.dimension)
         )
         trial._num_spins = occupied
-        trial.current_system = None
-        trial.best_system = None
+        trial.current_spins = None
+        trial.best_spins = None
         trial._anneal_data = AnnealData()
         trial._greedy_history = GreedyHistory()
         trial._parallel_tempering_history = ParallelTemperingHistory()
@@ -826,26 +716,30 @@ class System:
         return self
 
     def hemisphere_init(self, seed: Seed = None) -> "System":
+        """Initialize a spherical system with one randomly oriented hemisphere up."""
         self._require_neighborhood()
-        if self.geometry == Geometry.EUCLIDEAN:
+        if self.kind is SystemKind.EUCLIDEAN:
             raise ValueError("hemisphere_init() requires a spherical grid.")
         init_random_hemisphere(self, seed=seed)
         self._initialized = True
         return self
 
-    def tri_cog_init(self, num_cogs: int, cog_height: float) -> "System":
+    def triangle_cogwheel_init(self, num_cogs: int, cog_height: float) -> "System":
+        """Initialize a spherical system to a triangle-wave cogwheel boundary."""
         self._require_neighborhood()
         init_triangle_cogwheel(self, num_cogs, cog_height)
         self._initialized = True
         return self
 
-    def cos_cog_init(self, num_cogs: int, cog_height: float) -> "System":
+    def cosine_cogwheel_init(self, num_cogs: int, cog_height: float) -> "System":
+        """Initialize a spherical system to a cosine-wave cogwheel boundary."""
         self._require_neighborhood()
         init_cosine_cogwheel(self, num_cogs, cog_height)
         self._initialized = True
         return self
 
     def array_init(self, spin_array: NDArray[np.bool_]) -> "System":
+        """Initialize from an explicit spin array shaped like ``system_shape``."""
         self._require_neighborhood()
         init_from_array(self, spin_array)
         self._initialized = True
@@ -869,7 +763,12 @@ class System:
         verbose: bool = False,
         reinit: bool = False,
         seed: Seed = None,
-    ) -> None:
+    ) -> AnnealData:
+        """Run simulated annealing and return the updated ``anneal_data``.
+
+        ``schedule`` sets the base schedule; any non-None keyword overrides
+        the matching field (``steps`` sets ``starting_steps``).
+        """
         self._require_neighborhood()
         self._require_init()
         resolved_starting_temp = (
@@ -894,6 +793,7 @@ class System:
             reinit=reinit,
             seed=seed,
         )
+        return self.anneal_data
 
     def greedy(
         self,
@@ -904,6 +804,7 @@ class System:
         reinit: bool = False,
         verbose: bool = False,
     ) -> GreedyResult:
+        """Apply the best single update while its energy gain exceeds ``min_delta``."""
         self._require_neighborhood()
         self._require_init()
         return greedy_optimization(
@@ -937,6 +838,11 @@ class System:
         n_workers: int = 1,
         verbose: bool = False,
     ) -> ParallelTemperingResult:
+        """Run replica-exchange Monte Carlo and return the run summary.
+
+        Pass ``temperatures`` directly or let ``num_replicas`` geometric
+        temperatures span ``cold_temp`` to ``hot_temp``.
+        """
         self._require_neighborhood()
         self._require_init()
         return parallel_tempering(
@@ -959,6 +865,7 @@ class System:
 
     def thermalize(
         self,
+        *,
         target_acceptance: float = 0.6,
         tolerance: float = 0.05,
         steps_per_temp: int | None = None,
@@ -1006,7 +913,8 @@ class System:
 
     def plot(
         self,
-        plot_current: bool = False,
+        *,
+        state: str = "best",
         auto_rotate: bool = False,
         show_edges: bool = False,
         edge_distance: float | None = None,
@@ -1014,12 +922,13 @@ class System:
         voronoi: bool = False,
         plot_figure: bool = True,
     ):
-        system_to_plot = self.current_system if plot_current else self.best_system
-        if system_to_plot is None and self.geometry != Geometry.EUCLIDEAN:
+        """Plot the ``"best"`` or ``"current"`` spin state; returns the figure if not shown."""
+        system_to_plot = self._spins_for_state(state)
+        if system_to_plot is None and self.kind is not SystemKind.EUCLIDEAN:
             self._require_init()
         voronoi_padding_distance = None
         if voronoi:
-            if self.geometry != Geometry.EUCLIDEAN or self.dimension != 2:
+            if self.kind is not SystemKind.EUCLIDEAN or self.dimension != 2:
                 raise ValueError(
                     "voronoi=True is only available for 2D Euclidean systems."
                 )
@@ -1028,14 +937,12 @@ class System:
                     "voronoi=True requires an initialized spin state. "
                     "Call random_init() or array_init() first."
                 )
-            voronoi_padding_distance = (1.0 / self.num_spins) ** (
-                1.0 / self.dimension
-            ) / 2.0
+            voronoi_padding_distance = _cell_length(self) / 2.0
         return plot_spin_system(
-            system_config=self.config,
+            kind=self.kind,
             grid_points=self.grid,
             spin_states=system_to_plot,
-            fig_title="Current System" if plot_current else "Best System",
+            fig_title=f"{state.capitalize()} System",
             rotate=auto_rotate,
             show_edges=show_edges,
             edge_distance=edge_distance,
@@ -1050,7 +957,8 @@ class System:
         selected_site: int,
         plot_figure: bool = True,
     ):
-        if self.geometry != Geometry.EUCLIDEAN or self.dimension != 2:
+        """Plot one site's neighbors colored by contribution (2D Euclidean only)."""
+        if self.kind is not SystemKind.EUCLIDEAN or self.dimension != 2:
             raise ValueError(
                 "plot_neighbors() is only available for 2D Euclidean systems."
             )
@@ -1073,29 +981,27 @@ class System:
                 "plot_neighbors(selected_site=...) requires fixed-density "
                 "neighborhood rows with neighbor_spins and contributions."
             )
-        cell_length = (1.0 / self.num_spins) ** (1.0 / self.dimension)
         return plot_spin_system(
-            system_config=self.config,
+            kind=self.kind,
             grid_points=self.grid,
             spin_states=None,
             fig_title="Neighbors",
             selected_site=selected_site,
             selected_neighbor_spins=selected_row.neighbor_spins,
             selected_contributions=selected_row.contributions,
-            voronoi_padding_distance=cell_length / 2.0,
+            voronoi_padding_distance=_cell_length(self) / 2.0,
             plot_figure=plot_figure,
         )
 
-    def plot_boundary(
-        self, plot_current: bool = False, plot_figure: bool = True
-    ) -> None:
-        if self.geometry == Geometry.EUCLIDEAN:
+    def plot_boundary(self, *, state: str = "best", plot_figure: bool = True):
+        """Plot the up/down boundary in (phi, theta); returns ``(fig, ax)`` if not shown."""
+        if self.kind is SystemKind.EUCLIDEAN:
             raise ValueError(
                 "Boundary plotting is only implemented for spherical grids."
             )
-        system_to_plot = self.current_system if plot_current else self.best_system
-        independent = self.constraint == ConstraintModel.INDEPENDENT
-        graph_boundary(
+        system_to_plot = self._spins_for_state(state)
+        independent = self.kind is SystemKind.INDEPENDENT
+        return graph_boundary(
             grid=self.grid,
             spin_states=system_to_plot,
             antipodal=self.antipodal,
@@ -1119,20 +1025,17 @@ class System:
         spin_dims, spin_coords = self._spin_dims_and_coords()
         coords.update(spin_coords)
 
-        if self.current_system is not None:
-            data_vars["current_system"] = (spin_dims, self.current_system)
-        if self.best_system is not None:
-            data_vars["best_system"] = (spin_dims, self.best_system)
+        if self.current_spins is not None:
+            data_vars["current_spins"] = (spin_dims, self.current_spins)
+        if self.best_spins is not None:
+            data_vars["best_spins"] = (spin_dims, self.best_spins)
 
         ds = xr.Dataset(data_vars=data_vars, coords=coords)
 
         # Scalar metadata needed to validate and rebuild runtime state.
         attrs = {
             "format_version": self._SAVE_FORMAT_VERSION,
-            "geometry": self.geometry.value,
-            "constraint": self.constraint.value,
-            "interaction_model": self.interaction_model.value,
-            "update_rule": self.update_rule.value,
+            "kind": self.kind.value,
             "initialized": bool(self.initialized),
             "num_spins": int(self.num_spins),
             "site_count": int(self.grid.shape[0]),
@@ -1167,7 +1070,7 @@ class System:
             attrs["objective_normalization"] = "energy=num_spins*score/2"
             attrs["sampling_probabilities_json"] = json.dumps(self.sampling_probabilities)
             for state in ("current", "best"):
-                spins = getattr(self, f"{state}_system")
+                spins = getattr(self, f"{state}_spins")
                 if spins is not None:
                     attrs[f"{state}_angle_probabilities_json"] = json.dumps(
                         self.angle_probabilities(spins).tolist()
@@ -1182,7 +1085,7 @@ class System:
 
     def save(self, save_path: str | Path) -> Path:
         """Write the NetCDF state file and return its path."""
-        _, netcdf_path = self._resolve_save_paths(save_path)
+        netcdf_path = self._resolve_save_path(save_path)
         self.to_dataset().to_netcdf(netcdf_path)
         return netcdf_path
 
@@ -1191,10 +1094,11 @@ class System:
         load_path: str | Path,
         *,
         rebuild_neighborhood: bool = False,
-        silent: bool = True,
-    ) -> None:
+        verbose: bool = False,
+    ) -> "System":
         """
         Load state from NetCDF saved by `save()` without touching `self.grid`.
+        Returns the system so it can be chained after a constructor.
         Validates that the saved state matches this instance's grid shape and configuration.
         Optionally rebuild the neighborhood from saved built-in metadata.
 
@@ -1214,10 +1118,7 @@ class System:
                 f"{sorted(self._SUPPORTED_SAVE_FORMAT_VERSIONS)!r}."
             )
 
-        saved_config = self._config_from_dataset_attrs(
-            ds,
-            format_version=format_version,
-        )
+        saved_kind = self._kind_from_dataset_attrs(ds)
         saved_kernel_custom = bool(ds.attrs.get("kernel_custom", False))
         kernel_kind = str(self._require_dataset_attr(ds, "kernel_kind"))
         if saved_kernel_custom:
@@ -1262,10 +1163,10 @@ class System:
                 )
 
         # Enums and core attrs
-        if saved_config != self.config:
+        if saved_kind is not self.kind:
             raise ValueError(
-                "Saved state config does not match this instance. "
-                f"saved={saved_config!r} current={self.config!r}"
+                "Saved state kind does not match this instance. "
+                f"saved={saved_kind.value!r} current={self.kind.value!r}"
             )
         loaded_num_spins = int(self._require_dataset_attr(ds, "num_spins"))
         if loaded_num_spins != self.num_spins:
@@ -1321,16 +1222,18 @@ class System:
             (self.system_shape,) if isinstance(self.system_shape, int) else self.system_shape
         )
         for state in ("current", "best"):
-            name = f"{state}_system"
+            name = f"{state}_spins"
+            # Format 6.0 and earlier named these variables "<state>_system".
+            stored_name = name if name in ds else f"{state}_system"
             spins = None
-            if name in ds:
-                spins = np.ascontiguousarray(ds[name].values, dtype=np.bool_)
+            if stored_name in ds:
+                spins = np.ascontiguousarray(ds[stored_name].values, dtype=np.bool_)
                 if spins.shape != expected_shape:
                     raise ValueError(
                         f"Saved {name} has shape {spins.shape}, expected {expected_shape}."
                     )
                 if (
-                    self.geometry == Geometry.EUCLIDEAN
+                    self.kind is SystemKind.EUCLIDEAN
                     and np.count_nonzero(spins) != self.num_spins
                 ):
                     raise ValueError(
@@ -1344,23 +1247,23 @@ class System:
                 if value is not None:
                     self._stored_probabilities[key] = value
 
-        if not self.antipodal and self.current_system is not None:
-            self.sync_occupancy_from_spins()
+        if not self.antipodal and self.current_spins is not None:
+            self._sync_occupancy_from_spins()
         else:
-            self.set_occupancy(None)
+            self._set_occupancy(None)
 
         # Neighborhood rows are not stored in the dataset.
         self._neighborhood = None
 
         # If no spin state is present, mark uninitialized.
-        if self.current_system is None and self.best_system is None:
+        if self.current_spins is None and self.best_spins is None:
             self._initialized = False
 
         self._sampling_probabilities = None
         self._stored_angle_probabilities.clear()
         objective = ds.attrs.get("objective_type")
         if objective is not None:
-            if objective != "anticorrelation" or format_version != "6.0":
+            if objective != "anticorrelation" or format_version not in ("6.0", "7.0"):
                 raise ValueError("Unsupported saved objective type or format.")
             if ds.attrs.get("objective_normalization") != "energy=num_spins*score/2":
                 raise ValueError("Unsupported objective normalization.")
@@ -1386,17 +1289,10 @@ class System:
                     kernel=self.kernel,
                 )
             else:
-                self.compute_neighborhood(silent=silent)
+                self.compute_neighborhood(verbose=verbose)
+        return self
 
     # --- Implementation helpers ---
-
-    @staticmethod
-    def _coerce_enum(enum_type, value):
-        """Read enum values and legacy spellings from saved metadata."""
-        normalized = value.lower().replace("_", "-")
-        if enum_type is InteractionModel and normalized == "pairwise-occupancy":
-            normalized = "occupancy"
-        return enum_type(normalized)
 
     @classmethod
     def _coerce_kernel(
@@ -1433,13 +1329,6 @@ class System:
             return self._coerce_kernel(self.kernel)
         return KernelSpec.cosine()
 
-    @staticmethod
-    def _is_custom_kernel(kernel: KernelSpec | Callable) -> bool:
-        return not isinstance(kernel, KernelSpec)
-
-    @staticmethod
-    def _default_distance_metric(geometry: Geometry) -> str:
-        return "euclidean" if geometry == Geometry.EUCLIDEAN else "spherical"
 
     def _resolve_distance_metric_for_compute(
         self,
@@ -1454,11 +1343,7 @@ class System:
                 "The saved neighborhood metadata used a custom distance_metric. "
                 "Pass distance_metric=... to compute_neighborhood() to rebuild it."
             )
-        return self._default_distance_metric(self.geometry)
-
-    @staticmethod
-    def _is_custom_distance_metric(distance_metric: DistanceMetric) -> bool:
-        return not isinstance(distance_metric, str)
+        return "spherical" if self.kind.spherical else "euclidean"
 
     @staticmethod
     def _is_jump_distance_sequence(value: object) -> bool:
@@ -1483,7 +1368,7 @@ class System:
                 raise ValueError(
                     "jump_distance must be a finite scalar or non-empty 1D sequence."
                 )
-            if self.geometry == Geometry.EUCLIDEAN:
+            if self.kind is SystemKind.EUCLIDEAN:
                 raise ValueError(
                     "Multiple jump distances are currently supported only for "
                     "spherical systems."
@@ -1501,7 +1386,7 @@ class System:
             raise ValueError(f"jump_distance must be finite, got {value!r}.")
         if jump_distance < 0:
             raise ValueError("jump_distance must be nonnegative.")
-        if self.geometry == Geometry.SPHERICAL and jump_distance > np.pi:
+        if self.kind.spherical and jump_distance > np.pi:
             raise ValueError("Spherical jump_distance must lie in [0, pi].")
         return jump_distance
 
@@ -1593,7 +1478,10 @@ class System:
             num_spins = int(round(n_sites * density))
         elif num_spins is None:
             num_spins = n_sites // 2
+        return System._validate_occupied_count(num_spins, n_sites)
 
+    @staticmethod
+    def _validate_occupied_count(num_spins: int, n_sites: int) -> int:
         if isinstance(num_spins, bool) or not isinstance(num_spins, (int, np.integer)):
             raise TypeError("num_spins must be an integer.")
         resolved = int(num_spins)
@@ -1606,12 +1494,16 @@ class System:
     def _initialize_grid(
         self,
         grid: NDArray[np.float64],
-        config: SystemConfig,
+        kind: SystemKind | str,
         num_spins: int | None,
+        prescaled: bool,
     ) -> None:
-        """Validate the grid and set its physical scale and particle count."""
-        if not isinstance(config, SystemConfig):
-            raise TypeError("config must be a SystemConfig.")
+        """Validate the grid and set its physical scale and particle count.
+
+        ``prescaled`` Euclidean grids already have occupied volume 1 and are
+        not rescaled by their bounding box.
+        """
+        kind = SystemKind(kind)
         if not isinstance(grid, np.ndarray):
             raise TypeError(f"grid must be a numpy.ndarray, got {type(grid)!r}")
 
@@ -1620,7 +1512,7 @@ class System:
                 f"grid must be a 2D array of Cartesian coordinates with shape (N, d), "
                 f"but got shape {grid.shape}"
             )
-        if config.geometry == Geometry.EUCLIDEAN:
+        if kind is SystemKind.EUCLIDEAN:
             if grid.shape[1] < 1:
                 raise ValueError(
                     f"Euclidean grid must have at least one coordinate dimension, "
@@ -1636,56 +1528,54 @@ class System:
         grid = np.ascontiguousarray(grid, dtype=np.float64)
 
         n_sites = int(grid.shape[0])
-        requested_num_spins = num_spins
 
         # Enforce even number of sites only for antipodal systems
-        if config.antipodal:
-            if n_sites % 2 != 0:
-                raise ValueError(
-                    "Complementary and independent systems require an even number "
-                    "of lattice sites. "
-                    "The second half of lattice sites are assumed to be antipodes of the first half."
-                )
+        if kind.antipodal and n_sites % 2 != 0:
+            raise ValueError(
+                "Complementary and independent systems require an even number "
+                "of lattice sites. "
+                "The second half of lattice sites are assumed to be antipodes of the first half."
+            )
 
-        if requested_num_spins is not None:
-            if config.geometry != Geometry.EUCLIDEAN:
-                raise ValueError(
-                    "num_spins can only be set explicitly for Euclidean systems. "
-                    "Spherical systems derive num_spins from the grid size."
+        if num_spins is not None and kind is not SystemKind.EUCLIDEAN:
+            raise ValueError(
+                "num_spins can only be set explicitly for Euclidean systems. "
+                "Spherical systems derive num_spins from the grid size."
+            )
+        if kind is SystemKind.EUCLIDEAN:
+            resolved_num_spins = self._validate_occupied_count(
+                n_sites // 2 if num_spins is None else num_spins, n_sites
+            )
+            if not prescaled:
+                grid = normalize_euclidean_grid(
+                    grid, target_volume=n_sites / resolved_num_spins
                 )
-            if isinstance(requested_num_spins, bool) or not isinstance(
-                requested_num_spins, (int, np.integer)
-            ):
-                raise TypeError("num_spins must be an integer.")
-            resolved_num_spins = int(requested_num_spins)
         else:
             resolved_num_spins = n_sites // 2
 
-        if (
-            config.geometry == Geometry.EUCLIDEAN
-            and not 0 < resolved_num_spins < n_sites
-        ):
-            raise ValueError(
-                f"Euclidean num_spins must be between 1 and N-1 "
-                f"for N={n_sites} grid sites, got {resolved_num_spins}."
-            )
-
-        if config.geometry == Geometry.EUCLIDEAN:
-            target_volume = n_sites / resolved_num_spins
-            grid = normalize_euclidean_grid(grid, target_volume=target_volume)
-
         self._grid = grid
-        self._config = config
+        self._kind = kind
         self._num_spins = resolved_num_spins
+
+    def _spins_for_state(self, state: str) -> NDArray[np.bool_] | None:
+        if state not in ("current", "best"):
+            raise ValueError(f"state must be 'current' or 'best', got {state!r}.")
+        return self.current_spins if state == "current" else self.best_spins
+
+    def _forget_stored_probabilities(self, state: str) -> None:
+        """Drop probabilities loaded from disk once a state's spins or energy change."""
+        self._stored_probabilities.pop(f"{state}_probability", None)
+        self._stored_probabilities.pop(f"{state}_graph_probability", None)
+        self._stored_angle_probabilities.pop(state, None)
 
     def _refresh_energies_after_neighborhood_build(self) -> None:
         if self.neighborhood is None:
             return
-        energy = get_engine(self.config).energy
-        if self.current_system is not None:
-            self.current_energy = energy(self.current_system, self.neighborhood)
-        if self.best_system is not None:
-            self.best_energy = energy(self.best_system, self.neighborhood)
+        energy = get_engine(self.kind).energy
+        if self.current_spins is not None:
+            self.current_energy = energy(self.current_spins, self.neighborhood)
+        if self.best_spins is not None:
+            self.best_energy = energy(self.best_spins, self.neighborhood)
 
     def _require_neighborhood(self) -> None:
         if self.neighborhood is None:
@@ -1696,16 +1586,16 @@ class System:
     def _require_init(self) -> None:
         if not self.initialized:
             raise RuntimeError(
-                "System needs to be initialized. Call random_init(), ball_init(), hemisphere_init(), tri_cog_init(), cos_cog_init(), or array_init() first."
+                "System needs to be initialized. Call random_init(), ball_init(), hemisphere_init(), triangle_cogwheel_init(), cosine_cogwheel_init(), or array_init() first."
             )
 
     def _spin_dims_and_coords(self) -> tuple[tuple[str, ...], dict[str, np.ndarray]]:
         """Canonical dims/coords for storing spin arrays based on configuration."""
         n_sites = int(self.grid.shape[0])
-        if self.constraint == ConstraintModel.ANTIPODAL:
+        if self.kind is SystemKind.COMPLEMENTARY:
             dims = ("spin",)
             coords = {"spin": np.arange(self.num_spins)}
-        elif self.constraint == ConstraintModel.INDEPENDENT:
+        elif self.kind is SystemKind.INDEPENDENT:
             dims = ("spin", "comp")
             coords = {"spin": np.arange(self.num_spins), "comp": np.array([0, 1])}
         else:  # fixed-density spherical or Euclidean
@@ -1750,40 +1640,29 @@ class System:
         return value
 
     @classmethod
-    def _config_from_dataset_attrs(
-        cls,
-        ds: xr.Dataset,
-        *,
-        format_version: str,
-    ) -> SystemConfig:
-        interaction_model = cls._require_dataset_attr(ds, "interaction_model")
-        if format_version == "4.0" and interaction_model == "inverse":
-            interaction_model = InteractionModel.COMPLEMENTARY
-        return SystemConfig(
-            geometry=cls._coerce_enum(
-                Geometry, cls._require_dataset_attr(ds, "geometry")
-            ),
-            constraint=cls._coerce_enum(
-                ConstraintModel, cls._require_dataset_attr(ds, "constraint")
-            ),
-            interaction_model=cls._coerce_enum(InteractionModel, interaction_model),
-            update_rule=cls._coerce_enum(
-                UpdateRule, cls._require_dataset_attr(ds, "update_rule")
-            ),
-        )
+    def _kind_from_dataset_attrs(cls, ds: xr.Dataset) -> SystemKind:
+        if "kind" in ds.attrs:
+            return SystemKind(str(ds.attrs["kind"]))
+        # Format 6.0 and earlier stored four config fields; the constraint and
+        # geometry fields alone determine the kind.
+        geometry = str(cls._require_dataset_attr(ds, "geometry")).lower()
+        constraint = str(cls._require_dataset_attr(ds, "constraint")).lower().replace("_", "-")
+        if constraint == "fixed-density":
+            return SystemKind.EUCLIDEAN if geometry == "euclidean" else SystemKind.FIXED_DENSITY
+        if constraint == "antipodal":
+            return SystemKind.COMPLEMENTARY
+        if constraint == "independent":
+            return SystemKind.INDEPENDENT
+        raise ValueError(f"Unsupported saved constraint {constraint!r}.")
 
     @staticmethod
-    def _resolve_save_paths(save_path: str | Path) -> tuple[Path, Path]:
+    def _resolve_save_path(save_path: str | Path) -> Path:
+        """Treat suffix-less paths and directories as folders for system_state.nc."""
         save_path = Path(save_path)
         if save_path.suffix == "" or save_path.is_dir():
-            save_dir = save_path
-            save_dir.mkdir(parents=True, exist_ok=True)
-            netcdf_path = save_dir / "system_state.nc"
-        else:
-            save_dir = save_path.parent
-            save_dir.mkdir(parents=True, exist_ok=True)
-            netcdf_path = save_path
-        return save_dir, netcdf_path
+            save_path = save_path / "system_state.nc"
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        return save_path
 
     def _neighborhood_storage_metadata(self) -> dict[str, int | str | bool]:
         neighborhood = self.neighborhood
@@ -1794,7 +1673,7 @@ class System:
                 "neighborhood_rows": 0,
                 "neighborhood_edges": 0,
             }
-        if isinstance(neighborhood, NonAntipodalNeighborhoodCSR):
+        if isinstance(neighborhood, FixedDensityNeighborhoodCSR):
             return {
                 "neighborhood_built": True,
                 "neighborhood_storage": "csr",
@@ -1837,17 +1716,9 @@ class System:
 
     def _kernel_metadata(self) -> dict[str, str | bool | float]:
         kernel = self.kernel
-        custom = bool(self._kernel_is_custom)
-        attrs: dict[str, str | bool | float] = {"kernel_custom": custom}
-        if custom:
-            attrs["kernel_kind"] = "custom"
-            attrs["kernel_repr"] = repr(kernel)
-            return attrs
-        if not isinstance(kernel, KernelSpec):
-            attrs["kernel_kind"] = "custom"
-            attrs["kernel_custom"] = True
-            attrs["kernel_repr"] = repr(kernel)
-            return attrs
+        if self._kernel_is_custom or not isinstance(kernel, KernelSpec):
+            return {"kernel_custom": True, "kernel_kind": "custom", "kernel_repr": repr(kernel)}
+        attrs: dict[str, str | bool | float] = {"kernel_custom": False}
         attrs["kernel_kind"] = kernel.kind
         if kernel.kind == "gaussian":
             attrs["gaussian_sigma"] = float(kernel.sigma)
@@ -1871,7 +1742,7 @@ class System:
         """Save both normalizations, or explain why a value is undefined."""
         attrs: dict[str, float | str] = {}
         for state in ("current", "best"):
-            spins = getattr(self, f"{state}_system")
+            spins = getattr(self, f"{state}_spins")
             if spins is None:
                 continue
             for mode, suffix in (("continuum", "probability"), ("graph", "graph_probability")):
@@ -1901,7 +1772,7 @@ class System:
         mode = str(normalization).lower().replace("_", "-")
         if mode not in ("continuum", "graph"):
             raise ValueError("normalization must be either 'continuum' or 'graph'.")
-        spins = getattr(self, f"{state}_system")
+        spins = getattr(self, f"{state}_spins")
         if spins is None:
             raise RuntimeError(f"System has no {state} spin configuration.")
         suffix = "probability" if mode == "continuum" else "graph_probability"

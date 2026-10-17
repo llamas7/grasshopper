@@ -22,9 +22,9 @@ class GreedyResult:
 
 
 def _require_greedy_ready(system: "System") -> None:
-    if system.current_system is None:
+    if system.current_spins is None:
         raise RuntimeError("System has no current spin state. Initialize it first.")
-    if system.best_system is None:
+    if system.best_spins is None:
         raise RuntimeError("System has no best spin state. Initialize it first.")
     if system.neighborhood is None:
         raise RuntimeError(
@@ -39,16 +39,16 @@ def _recompute_energy_state(
 ) -> np.ndarray:
     grid_gen = engine.grid_gen
     system_energy_fn = engine.energy
-    energy_array = grid_gen(system.current_system, system.neighborhood)
+    energy_array = grid_gen(system.current_spins, system.neighborhood)
     system.current_energy = float(
-        system_energy_fn(system.current_system, system.neighborhood)
+        system_energy_fn(system.current_spins, system.neighborhood)
     )
     system.best_energy = float(
-        system_energy_fn(system.best_system, system.neighborhood)
+        system_energy_fn(system.best_spins, system.neighborhood)
     )
     if track_best and system.current_energy > system.best_energy:
         system.best_energy = system.current_energy
-        system.best_system = system.current_system.copy()
+        system.best_spins = system.current_spins.copy()
     return energy_array
 
 
@@ -74,14 +74,14 @@ def greedy_optimization(
     if min_delta < 0:
         raise ValueError(f"min_delta must be nonnegative, got {min_delta!r}.")
 
-    engine = get_engine(system.config)
+    engine = get_engine(system.kind)
     best_update = engine.best_update
     update = engine.update
 
     energy_array = (
         _recompute_energy_state(system, engine, track_best)
         if reinit
-        else engine.grid_gen(system.current_system, system.neighborhood)
+        else engine.grid_gen(system.current_spins, system.neighborhood)
     )
 
     steps = 0
@@ -104,7 +104,7 @@ def greedy_optimization(
 
         if track_best and system.current_energy > system.best_energy:
             system.best_energy = system.current_energy
-            system.best_system = system.current_system.copy()
+            system.best_spins = system.current_spins.copy()
 
         steps += 1
         last_delta = dE

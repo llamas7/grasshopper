@@ -21,7 +21,7 @@ It includes:
 
 - spherical complementary systems
 - spherical independent systems
-- spherical fixed-density non-antipodal systems
+- spherical fixed-density systems
 - Euclidean fixed-density systems
 - simulated annealing
 - greedy local descent
@@ -43,7 +43,28 @@ If you prefer using the repository requirements file:
 pip install -r requirements.txt
 ```
 
-Optional GPU neighborhood helpers require a CUDA-matched CuPy build. The default library path is CPU-based.
+## Upgrading from 1.x
+
+Version 2.0 renames parts of the public API. Files saved by 1.x still load.
+
+| 1.x | 2.0 |
+| --- | --- |
+| `System(grid, config=SystemConfig.euclidean(), ...)` | `System(grid, SystemKind.EUCLIDEAN, ...)` |
+| `system.config`, `.geometry`, `.constraint`, `.interaction_model`, `.update_rule` | `system.kind` (with `kind.spherical`, `kind.antipodal`, `kind.fixed_density`) |
+| `System.non_antipodal(grid)` | `System.fixed_density(grid)` |
+| `NonAntipodalNeighborhood`, `NonAntipodalNeighborhoodCSR` | `FixedDensityNeighborhood`, `FixedDensityNeighborhoodCSR` |
+| `current_system`, `best_system` | `current_spins`, `best_spins` |
+| `current_graph_probability`, `best_graph_probability` | `probability(normalization="graph")`, `probability("best", normalization="graph")` |
+| `probability(None)` | `probability()` or `probability("current")` |
+| `System.rectangular_lattice(...)`, `.triangular_lattice`, `.hexagonal_lattice`, `.honeycomb_lattice` | `System.regular_lattice("rectangular", ...)` and so on |
+| `tri_cog_init`, `cos_cog_init` | `triangle_cogwheel_init`, `cosine_cogwheel_init` |
+| `plot(plot_current=True)`, `plot_boundary(plot_current=True)` | `plot(state="current")`, `plot_boundary(state="current")` |
+| `compute_neighborhood(silent=False)`, `load(..., silent=False)` | `verbose=True` |
+| positional arguments to `plot()`, `plot_boundary()`, `thermalize()` | keyword arguments only |
+| `snapshot_state`, `restore_state`, `set_occupancy`, `sync_occupancy_from_spins` | private |
+| GPU helpers in `grasshopper.build_neighbors_gpu` | removed |
+
+`anneal()` now returns `anneal_data`, and `load()` returns the system.
 
 ## Package layout
 
@@ -63,7 +84,7 @@ import grasshopper as gh
 
 grid = np.loadtxt("path/to/grid.txt")
 
-system = gh.System.non_antipodal(grid)
+system = gh.System.fixed_density(grid)
 system.compute_neighborhood(
     jump_distance=0.23 * np.pi,
     kernel=gh.KernelSpec.cosine(),
@@ -79,7 +100,7 @@ system.parallel_temper(
 )
 system.greedy(reinit=False)
 print(system.best_probability)
-system.save("output/non_antipodal_run.nc")
+system.save("output/fixed_density_run.nc")
 ```
 
 Setup methods can be chained:
@@ -122,26 +143,30 @@ The recommended entrypoints are:
 ```python
 system = gh.System.complementary(grid)
 system = gh.System.independent(grid)
-system = gh.System.non_antipodal(grid)
+system = gh.System.fixed_density(grid)
 system = gh.System.euclidean(grid, num_spins=1000)
 system = gh.System.square_lattice(width=64, height=64, density=0.5)
-system = gh.System.hexagonal_lattice(width=32, height=32, num_spins=512)
+system = gh.System.regular_lattice("hexagonal", 32, 32, num_spins=512)
 ```
 
-There is also a lower-level explicit constructor:
+There is also a lower-level constructor that takes the system kind:
 
 ```python
-system = gh.System(grid, config=gh.SystemConfig.non_antipodal())
+system = gh.System(grid, gh.SystemKind.FIXED_DENSITY)
+system = gh.System(grid, "euclidean", num_spins=1000)
 ```
 
 ## Supported system families
 
-| Family | Constructor | Geometry | Constraint | Update rule |
+| `SystemKind` | Constructor | Grid | Spins | Update rule |
 | --- | --- | --- | --- | --- |
-| Complementary | `System.complementary(grid)` | Spherical | Antipodal | Flip |
-| Independent | `System.independent(grid)` | Spherical | Independent | Flip |
-| Non-antipodal | `System.non_antipodal(grid)` | Spherical | Fixed-density | Swap |
-| Euclidean | `System.euclidean(grid, num_spins=...)` | Euclidean | Fixed-density | Swap |
+| `COMPLEMENTARY` | `System.complementary(grid)` | Spherical, antipodal pairs | One spin per pair | Flip |
+| `INDEPENDENT` | `System.independent(grid)` | Spherical, antipodal pairs | Two spins per pair | Flip |
+| `FIXED_DENSITY` | `System.fixed_density(grid)` | Spherical | Half the sites occupied | Swap |
+| `EUCLIDEAN` | `System.euclidean(grid, num_spins=...)` | Euclidean | `num_spins` sites occupied | Swap |
+
+`system.kind` reports the family; `kind.spherical`, `kind.antipodal` and
+`kind.fixed_density` answer the common questions about it.
 
 Spherical grids should have shape `(N, 3)` with Cartesian coordinates on the unit sphere. Euclidean grids should have shape `(N, d)`.
 
@@ -152,9 +177,9 @@ and system in one call:
 
 ```python
 square = gh.System.square_lattice(64, 64, density=0.5)
-rectangular = gh.System.rectangular_lattice(64, 32, density=0.5)
-triangular = gh.System.triangular_lattice(64, 64, num_spins=2048)
-hexagonal = gh.System.hexagonal_lattice(32, 32, density=0.5)
+rectangular = gh.System.regular_lattice("rectangular", 64, 32, density=0.5)
+triangular = gh.System.regular_lattice("triangular", 64, 64, num_spins=2048)
+hexagonal = gh.System.regular_lattice("hexagonal", 32, 32, density=0.5)
 ```
 
 Euclidean systems use a fixed total occupied spin-cell area of `1.0` by
@@ -170,7 +195,7 @@ The exported grid builders, such as `gh.square_lattice(...)`, only create raw
 candidate-site coordinates. For example, `gh.square_lattice(100, 100)` still
 returns spacing `0.01`. The occupied-site normalization happens when those
 coordinates are wrapped in `System.euclidean(...)` or created through a
-`System.*_lattice(...)` constructor. To control a custom candidate geometry,
+`System.square_lattice(...)` / `System.regular_lattice(...)` constructor. To control a custom candidate geometry,
 build the raw coordinates directly and pass them to `System.euclidean(...)`;
 the system will still set the final physical scale from `num_spins`.
 
@@ -314,7 +339,7 @@ system.hemisphere_init(seed=123)
 system.anneal(steps=100_000, seed=456)
 system.greedy(reinit=True)
 print(system.best_probability)
-print(system.angle_probabilities(system.best_system))
+print(system.angle_probabilities(system.best_spins))
 ```
 
 The objective is `sum(q[a] * P[a])` on the **same pair of lawns**. Probabilities
@@ -393,8 +418,8 @@ Finite grids can also be normalized by their available outgoing interaction
 weight:
 
 ```python
-p_graph = system.current_graph_probability
-p_graph_best = system.best_graph_probability
+p_graph = system.probability(normalization="graph")
+p_graph_best = system.probability("best", normalization="graph")
 p_graph_other = system.probability(other_boolean_state, normalization="graph")
 ```
 
@@ -424,8 +449,8 @@ Depending on the system family, you can initialize with:
 - `random_init(seed=...)`
 - `ball_init(radius)` for Euclidean grids
 - `hemisphere_init(seed=...)` for spherical systems
-- `tri_cog_init(num_cogs=..., cog_height=...)`
-- `cos_cog_init(num_cogs=..., cog_height=...)`
+- `triangle_cogwheel_init(num_cogs=..., cog_height=...)`
+- `cosine_cogwheel_init(num_cogs=..., cog_height=...)`
 - `array_init(spin_array)`
 
 For a Euclidean ball, specify the radius in cell lengths:
@@ -595,7 +620,7 @@ system.load("output/run.nc")
 
 If you pass a path with no suffix, the library treats it as a directory and writes `system_state.nc` inside it.
 `save()` returns the path written; `load()` mutates the existing system and
-returns `None`.
+returns it, so `System.euclidean(grid, num_spins=k).load(path)` works.
 
 Important persistence note:
 
@@ -631,7 +656,7 @@ import xarray as xr
 
 system.load(path)
 print(system.best_probability)
-print(system.current_graph_probability)
+print(system.probability(normalization="graph"))
 # Or inspect the file directly:
 with xr.open_dataset(path) as ds:
     print(ds.attrs["best_probability"])
@@ -647,7 +672,7 @@ run, since this sets the physical scale for Euclidean grids.
 Built-in metadata can be rebuilt automatically:
 
 ```python
-loaded = gh.System.non_antipodal(grid)
+loaded = gh.System.fixed_density(grid)
 loaded.load("output/run.nc", rebuild_neighborhood=True)
 ```
 
@@ -688,7 +713,7 @@ result = system.greedy(max_steps=1000)
 
 ```python
 system = (
-    gh.System.non_antipodal(grid)
+    gh.System.fixed_density(grid)
     .compute_neighborhood(
         jump_distance=[0.485 * np.pi, 0.515 * np.pi],
         jump_weights=[1.0, 0.75],
@@ -732,12 +757,12 @@ The package includes:
 For regular 2D lattices:
 
 ```python
-system = gh.System.hexagonal_lattice(16, 16, density=0.5)
+system = gh.System.regular_lattice("hexagonal", 16, 16, density=0.5)
 system.compute_neighborhood(jump_distance=0.30)
 system.plot_neighbors(selected_site=42)
 
 system.random_init(seed=123)
-system.plot(plot_current=True, show_edges=True)
+system.plot(state="current", show_edges=True)
 ```
 
 Euclidean system plots use Matplotlib and return a Matplotlib `Figure` when
@@ -752,7 +777,7 @@ repository root:
 ```bash
 python examples/spherical_complementary.py
 python examples/spherical_independent.py
-python examples/spherical_non_antipodal.py
+python examples/spherical_fixed_density.py
 python examples/euclidean_2d.py
 python examples/euclidean_3d.py
 python examples/gaussian_kernel.py
@@ -787,6 +812,3 @@ python -m unittest discover -s tests -v
 ## Acceleration notes
 
 - Numba acceleration is used automatically when available.
-- GPU neighborhood helpers live in
-  [`grasshopper/build_neighbors_gpu.py`](grasshopper/build_neighbors_gpu.py).
-- GPU support is optional and requires installing a CuPy build that matches your CUDA setup.

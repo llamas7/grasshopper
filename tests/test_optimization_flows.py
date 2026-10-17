@@ -30,13 +30,13 @@ class OptimizationFlowTests(unittest.TestCase):
 
     def make_complementary_system(self) -> gh.System:
         system = gh.System.complementary(spherical_grid())
-        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        system.compute_neighborhood(jump_distance=np.pi / 2)
         system.array_init(np.array([True, False, True], dtype=bool))
         return system
 
     def make_independent_system(self) -> gh.System:
         system = gh.System.independent(spherical_grid())
-        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+        system.compute_neighborhood(jump_distance=np.pi / 2)
         system.array_init(
             np.array(
                 [
@@ -49,9 +49,9 @@ class OptimizationFlowTests(unittest.TestCase):
         )
         return system
 
-    def make_non_antipodal_system(self) -> gh.System:
-        system = gh.System.non_antipodal(spherical_grid())
-        system.compute_neighborhood(jump_distance=np.pi / 2, silent=True)
+    def make_fixed_density_system(self) -> gh.System:
+        system = gh.System.fixed_density(spherical_grid())
+        system.compute_neighborhood(jump_distance=np.pi / 2)
         system.array_init(
             np.array([True, False, True, False, True, False], dtype=bool)
         )
@@ -59,7 +59,7 @@ class OptimizationFlowTests(unittest.TestCase):
 
     def make_euclidean_system(self) -> gh.System:
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        system.compute_neighborhood(jump_distance=1.0, silent=True)
+        system.compute_neighborhood(jump_distance=1.0)
         system.array_init(np.array([True, False, True, False], dtype=bool))
         return system
 
@@ -71,7 +71,7 @@ class OptimizationFlowTests(unittest.TestCase):
         self.assertIs(clone.grid, system.grid)
         self.assertIs(clone.neighborhood, system.neighborhood)
         self.assertEqual(clone.state_summary(), system.state_summary())
-        for name in ("current_system", "best_system"):
+        for name in ("current_spins", "best_spins"):
             np.testing.assert_array_equal(getattr(clone, name), getattr(system, name))
             self.assertFalse(np.shares_memory(getattr(clone, name), getattr(system, name)))
         for name in ("occupied", "unoccupied"):
@@ -84,24 +84,24 @@ class OptimizationFlowTests(unittest.TestCase):
 
         clone.greedy_history.records.clear()
         self.assertTrue(system.greedy_history.records)
-        clone.compute_neighborhood(jump_distance=0.8, silent=True)
+        clone.compute_neighborhood(jump_distance=0.8)
         self.assertEqual(system.jump_distance, 1.0)
         self.assertEqual(clone.jump_distance, 0.8)
 
     def test_snapshot_restore_is_detached_and_restores_physical_state(self) -> None:
         system = self.make_euclidean_system()
-        state = system.snapshot_state()
-        original_spins = state.current_system.copy()
+        state = system._snapshot_state()
+        original_spins = state.current_spins.copy()
         system.array_init(~original_spins)
-        np.testing.assert_array_equal(state.current_system, original_spins)
+        np.testing.assert_array_equal(state.current_spins, original_spins)
 
-        system.restore_state(state)
-        np.testing.assert_array_equal(system.current_system, original_spins)
+        system._restore_state(state)
+        np.testing.assert_array_equal(system.current_spins, original_spins)
         self.assertAlmostEqual(system.current_energy, exact_energy(system))
         assert_fixed_density_consistent(self, system)
-        state.current_system[:] = False
+        state.current_spins[:] = False
         state.occupancy.occupied[:] = -1
-        np.testing.assert_array_equal(system.current_system, original_spins)
+        np.testing.assert_array_equal(system.current_spins, original_spins)
         assert_fixed_density_consistent(self, system)
 
     def test_thermalize_updates_runtime_temperature(self) -> None:
@@ -138,8 +138,8 @@ class OptimizationFlowTests(unittest.TestCase):
 
     def test_metropolis_sweep_uses_spinflip_numba_hook_for_complementary(self) -> None:
         system = self.make_complementary_system()
-        engine = get_engine(system.config)
-        energy_array = engine.grid_gen(system.current_system, system.neighborhood)
+        engine = get_engine(system.kind)
+        energy_array = engine.grid_gen(system.current_spins, system.neighborhood)
 
         with mock.patch(
             "grasshopper.annealing.run_fixed_density_numba_sweep",
@@ -198,7 +198,7 @@ class OptimizationFlowTests(unittest.TestCase):
         systems = [
             self.make_complementary_system(),
             self.make_independent_system(),
-            self.make_non_antipodal_system(),
+            self.make_fixed_density_system(),
             self.make_euclidean_system(),
         ]
 
@@ -283,8 +283,8 @@ class OptimizationFlowTests(unittest.TestCase):
         loaded = gh.System.euclidean(euclidean_grid(), num_spins=2)
         loaded.load(save_path)
 
-        self.assertTrue(np.array_equal(system.current_system, loaded.current_system))
-        self.assertTrue(np.array_equal(system.best_system, loaded.best_system))
+        self.assertTrue(np.array_equal(system.current_spins, loaded.current_spins))
+        self.assertTrue(np.array_equal(system.best_spins, loaded.best_spins))
         self.assertEqual(system.current_energy, loaded.current_energy)
         self.assertEqual(system.best_energy, loaded.best_energy)
         self.assertAlmostEqual(

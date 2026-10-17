@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from .core import NonAntipodalNeighborhoodCSR
+from .core import FixedDensityNeighborhoodCSR
 
 try:
     from numba import njit
@@ -50,7 +50,7 @@ if NUMBA_AVAILABLE:
 
     @njit(cache=True)
     def _fixed_density_metropolis_sweep(
-            current_system,
+            current_spins,
             energy_grid,
             occupied,
             unoccupied,
@@ -60,7 +60,7 @@ if NUMBA_AVAILABLE:
             temperature,
             n_steps,
             current_energy,
-            best_system,
+            best_spins,
             best_energy,
             track_best,
             random_seed,
@@ -88,8 +88,8 @@ if NUMBA_AVAILABLE:
                     continue
 
             accepted += 1
-            current_system[spin_up] = False
-            current_system[spin_down] = True
+            current_spins[spin_up] = False
+            current_spins[spin_down] = True
 
             for edge in range(indptr[spin_up], indptr[spin_up + 1]):
                 energy_grid[neighbor_spins[edge]] -= contributions[edge]
@@ -103,7 +103,7 @@ if NUMBA_AVAILABLE:
 
             if track_best and current_energy > best_energy:
                 best_energy = current_energy
-                best_system[:] = current_system
+                best_spins[:] = current_spins
 
         return accepted / n_steps, current_energy, best_energy
 
@@ -126,18 +126,18 @@ def run_fixed_density_numba_sweep(
         raise ValueError(f"Temperature must be nonnegative, got {T!r}.")
     if system.occupancy is None:
         return None
-    if not isinstance(system.neighborhood, NonAntipodalNeighborhoodCSR):
+    if not isinstance(system.neighborhood, FixedDensityNeighborhoodCSR):
         return None
-    if system.current_system is None or system.best_system is None:
+    if system.current_spins is None or system.best_spins is None:
         return None
-    if system.current_system.ndim != 1 or system.best_system.ndim != 1:
+    if system.current_spins.ndim != 1 or system.best_spins.ndim != 1:
         return None
     if energy_array.ndim != 1:
         return None
 
     random_seed = int(np.random.randint(0, np.iinfo(np.int32).max))
     acceptance, current_energy, best_energy = _fixed_density_metropolis_sweep(
-        system.current_system,
+        system.current_spins,
         energy_array,
         system.occupancy.occupied,
         system.occupancy.unoccupied,
@@ -147,7 +147,7 @@ def run_fixed_density_numba_sweep(
         float(T),
         int(n_steps),
         float(system.current_energy),
-        system.best_system,
+        system.best_spins,
         float(system.best_energy),
         bool(track_best),
         random_seed,

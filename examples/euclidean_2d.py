@@ -47,7 +47,6 @@ def main(argv: Sequence[str] | None = None) -> gh.System:
         jump_distance=args.jump_distance,
         kernel=gh.KernelSpec.cosine(),
         distance_metric="euclidean",
-        silent=True,
     )
     system.random_init(seed=args.seed)
     optimize(

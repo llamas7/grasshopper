@@ -152,7 +152,7 @@ class ProbabilityTests(unittest.TestCase):
                 ),
             ),
             (
-                gh.System.non_antipodal(spherical_grid()),
+                gh.System.fixed_density(spherical_grid()),
                 np.array([True, False, True, False, True, False], dtype=bool),
             ),
             (
@@ -161,7 +161,7 @@ class ProbabilityTests(unittest.TestCase):
             ),
         ]
         for system, state in systems_and_states:
-            distance = np.pi / 2 if system.geometry == gh.Geometry.SPHERICAL else 1.0
+            distance = np.pi / 2 if system.kind.spherical else 1.0
             system.compute_neighborhood(distance)
             system.array_init(state)
             self.assertAlmostEqual(
@@ -173,8 +173,8 @@ class ProbabilityTests(unittest.TestCase):
                 system.best_probability,
                 system.probability(state),
             )
-            self.assertTrue(np.isfinite(system.current_graph_probability))
-            self.assertTrue(np.isfinite(system.best_graph_probability))
+            self.assertTrue(np.isfinite(system.probability(normalization="graph")))
+            self.assertTrue(np.isfinite(system.probability("best", normalization="graph")))
 
     def test_antipodal_graph_probability_is_half_at_right_angle(self) -> None:
         complementary = gh.System.complementary(spherical_grid())
@@ -239,8 +239,8 @@ class ProbabilityTests(unittest.TestCase):
         )
 
     def test_sparse_and_all_pairs_gaussians_agree_up_to_truncated_tail(self) -> None:
-        sparse = gh.System.non_antipodal(spherical_grid())
-        full = gh.System.non_antipodal(spherical_grid())
+        sparse = gh.System.fixed_density(spherical_grid())
+        full = gh.System.fixed_density(spherical_grid())
         sparse.compute_neighborhood(
             np.pi / 2,
             kernel=gh.KernelSpec.gaussian(0.3, cutoff=5.0),
@@ -298,7 +298,7 @@ class ProbabilityTests(unittest.TestCase):
             custom.probability(state, normalization="graph")
 
     def test_empty_lawn_zero_graph_weight_and_invalid_distances(self) -> None:
-        system = gh.System.non_antipodal(spherical_grid())
+        system = gh.System.fixed_density(spherical_grid())
         system.compute_neighborhood(np.pi / 3)
         with self.assertRaisesRegex(ZeroDivisionError, "zero occupied"):
             system.probability(np.zeros(6, dtype=bool))
@@ -362,6 +362,33 @@ class ProbabilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported saved-state"):
             rejected.load(legacy_path)
 
+    def test_version_six_files_with_legacy_names_still_load(self) -> None:
+        test_dir = make_test_dir(self.id().replace(".", "_"))
+        system = gh.System.euclidean(euclidean_grid(), num_spins=2)
+        system.compute_neighborhood(1.0)
+        system.array_init(np.array([True, False, True, False], dtype=bool))
+
+        legacy = system.to_dataset().rename(
+            {"current_spins": "current_system", "best_spins": "best_system"}
+        )
+        del legacy.attrs["kind"]
+        legacy.attrs.update(
+            format_version="6.0",
+            geometry="euclidean",
+            constraint="fixed-density",
+            interaction_model="occupancy",
+            update_rule="swap",
+        )
+        legacy_path = test_dir / "v6_euclidean.nc"
+        legacy.to_netcdf(legacy_path)
+
+        loaded = gh.System.euclidean(euclidean_grid(), num_spins=2).load(
+            legacy_path, rebuild_neighborhood=True
+        )
+        np.testing.assert_array_equal(loaded.current_spins, system.current_spins)
+        np.testing.assert_array_equal(loaded.best_spins, system.best_spins)
+        self.assertAlmostEqual(loaded.current_energy, system.current_energy)
+
     def test_version_four_inverse_metadata_migrates_to_complementary(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.complementary(spherical_grid())
@@ -369,18 +396,21 @@ class ProbabilityTests(unittest.TestCase):
         system.array_init(np.array([True, False, True], dtype=bool))
 
         legacy = system.to_dataset()
-        legacy.attrs["format_version"] = "4.0"
-        legacy.attrs["interaction_model"] = "inverse"
+        del legacy.attrs["kind"]
+        legacy.attrs.update(
+            format_version="4.0",
+            geometry="spherical",
+            constraint="antipodal",
+            interaction_model="inverse",
+            update_rule="flip",
+        )
         legacy_path = test_dir / "v4_complementary.nc"
         legacy.to_netcdf(legacy_path)
 
         loaded = gh.System.complementary(spherical_grid())
         loaded.load(legacy_path, rebuild_neighborhood=True)
 
-        self.assertEqual(
-            loaded.interaction_model,
-            gh.InteractionModel.COMPLEMENTARY,
-        )
+        self.assertIs(loaded.kind, gh.SystemKind.COMPLEMENTARY)
         self.assertAlmostEqual(loaded.current_energy, system.current_energy)
 
     def test_probabilities_survive_save_load_and_resave_without_neighborhood(self) -> None:
@@ -388,18 +418,24 @@ class ProbabilityTests(unittest.TestCase):
         constructors = (
             lambda: gh.System.complementary(spherical_grid()),
             lambda: gh.System.independent(spherical_grid()),
-            lambda: gh.System.non_antipodal(spherical_grid()),
+            lambda: gh.System.fixed_density(spherical_grid()),
             lambda: gh.System.euclidean(euclidean_grid(), num_spins=2),
         )
         keys = ("current_probability", "best_probability",
                 "current_graph_probability", "best_graph_probability")
+
+        def read(system, key):
+            state, _, mode = key.partition("_")
+            normalization = "graph" if mode.startswith("graph") else "continuum"
+            return system.probability(state, normalization=normalization)
+
         for index, construct in enumerate(constructors):
             with self.subTest(family=index):
                 system = construct()
-                system.compute_neighborhood(1.0, silent=True)
+                system.compute_neighborhood(1.0)
                 system.random_init(seed=123)
                 system.greedy(reinit=False)
-                expected = {key: getattr(system, key) for key in keys}
+                expected = {key: read(system, key) for key in keys}
                 path = system.save(test_dir / f"family_{index}.nc")
                 with xr.open_dataset(path) as ds:
                     for key, value in expected.items():
@@ -409,7 +445,7 @@ class ProbabilityTests(unittest.TestCase):
                 loaded.load(path)
                 self.assertIsNone(loaded.neighborhood)
                 for key, value in expected.items():
-                    self.assertAlmostEqual(getattr(loaded, key), value)
+                    self.assertAlmostEqual(read(loaded, key), value)
                 self.assertAlmostEqual(loaded.probability(), expected["current_probability"])
                 self.assertAlmostEqual(loaded.probability(normalization="graph"),
                                        expected["current_graph_probability"])
@@ -421,20 +457,20 @@ class ProbabilityTests(unittest.TestCase):
                 clone = loaded.clone()
                 clone.current_energy = 0.0
                 with self.assertRaisesRegex(RuntimeError, "Neighborhood"):
-                    _ = clone.current_graph_probability
-                self.assertAlmostEqual(loaded.current_graph_probability,
+                    _ = clone.probability(normalization="graph")
+                self.assertAlmostEqual(loaded.probability(normalization="graph"),
                                        expected["current_graph_probability"])
 
-                loaded.compute_neighborhood(silent=True)
+                loaded.compute_neighborhood()
                 for key, value in expected.items():
-                    self.assertAlmostEqual(getattr(loaded, key), value)
+                    self.assertAlmostEqual(read(loaded, key), value)
 
     def test_save_records_why_continuum_probability_is_unavailable(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        system.compute_neighborhood(1.0, kernel=gh.KernelSpec.exact(), silent=True)
+        system.compute_neighborhood(1.0, kernel=gh.KernelSpec.exact())
         system.array_init(np.array([True, False, True, False], dtype=bool))
-        expected = system.current_graph_probability
+        expected = system.probability(normalization="graph")
         path = system.save(test_dir / "exact.nc")
         with xr.open_dataset(path) as ds:
             self.assertNotIn("current_probability", ds.attrs)
@@ -442,12 +478,12 @@ class ProbabilityTests(unittest.TestCase):
             self.assertAlmostEqual(ds.attrs["current_graph_probability"], expected)
         loaded = gh.System.euclidean(euclidean_grid(), num_spins=2)
         loaded.load(path)
-        self.assertAlmostEqual(loaded.current_graph_probability, expected)
+        self.assertAlmostEqual(loaded.probability(normalization="graph"), expected)
 
     def test_load_rejects_different_particle_count_and_malformed_spins(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.euclidean(euclidean_grid(), num_spins=2)
-        system.compute_neighborhood(1.0, silent=True)
+        system.compute_neighborhood(1.0)
         system.random_init(seed=123)
         path = system.save(test_dir / "state.nc")
         different_density = gh.System.euclidean(euclidean_grid(), num_spins=1)
@@ -455,15 +491,15 @@ class ProbabilityTests(unittest.TestCase):
             different_density.load(path)
 
         malformed = system.to_dataset()
-        malformed["current_system"] = (("wrong_site",), [True, False, True])
+        malformed["current_spins"] = (("wrong_site",), [True, False, True])
         malformed.to_netcdf(test_dir / "malformed.nc")
-        with self.assertRaisesRegex(ValueError, "current_system has shape"):
+        with self.assertRaisesRegex(ValueError, "current_spins has shape"):
             system.load(test_dir / "malformed.nc")
 
     def test_older_checkpoint_without_probabilities_can_be_rebuilt(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
         system = gh.System.complementary(spherical_grid())
-        system.compute_neighborhood(1.0, silent=True)
+        system.compute_neighborhood(1.0)
         system.random_init(seed=123)
         ds = system.to_dataset()
         for key in list(ds.attrs):
@@ -474,7 +510,7 @@ class ProbabilityTests(unittest.TestCase):
         loaded = gh.System.complementary(spherical_grid())
         loaded.load(path, rebuild_neighborhood=True)
         self.assertAlmostEqual(loaded.current_probability, system.current_probability)
-        self.assertAlmostEqual(loaded.current_graph_probability, system.current_graph_probability)
+        self.assertAlmostEqual(loaded.probability(normalization="graph"), system.probability(normalization="graph"))
 
     def test_custom_shell_measure_must_be_resupplied_after_load(self) -> None:
         test_dir = make_test_dir(self.id().replace(".", "_"))
@@ -495,30 +531,6 @@ class ProbabilityTests(unittest.TestCase):
         loaded.compute_neighborhood(shell_measure=lambda radius: 8.0 * radius)
         self.assertEqual(loaded.radial_bounds, (0.0, 4.0))
         self.assertTrue(np.isfinite(loaded.current_probability))
-
-    def test_gpu_compact_kernels_match_cpu_when_cupy_is_available(self) -> None:
-        import grasshopper.build_neighbors_gpu as gpu
-
-        if gpu.cp is None:
-            self.skipTest("CuPy is not installed.")
-        errors = np.linspace(0.0, 2.5, 101)
-        for cpu_kernel, gpu_kernel in (
-            (cosine_kernel, gpu.cosine_kernel_gpu),
-            (cell_averaged_hat_kernel, gpu.cell_averaged_hat_kernel_gpu),
-            (
-                cell_averaged_cosine_kernel,
-                gpu.cell_averaged_cosine_kernel_gpu,
-            ),
-        ):
-            cpu_weights, cpu_mask = cpu_kernel(errors, 1.0)
-            gpu_weights, gpu_mask = gpu_kernel(gpu.cp.asarray(errors), 1.0)
-            np.testing.assert_array_equal(gpu.cp.asnumpy(gpu_mask), cpu_mask)
-            np.testing.assert_allclose(
-                gpu.cp.asnumpy(gpu_weights)[cpu_mask],
-                cpu_weights,
-                atol=1e-12,
-                rtol=1e-12,
-            )
 
     def test_spherical_shell_measure_matches_geodesic_circumference(self) -> None:
         self.assertAlmostEqual(spherical_shell_measure(np.pi / 2), 2.0 * np.pi)

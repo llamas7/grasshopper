@@ -37,7 +37,7 @@ def update_independent_energy_grid(
         update: tuple(int, int),
         energy_grid: NDArray[np.float64],
 ):
-    system_states = system.current_system
+    system_states = system.current_spins
     spin_num, system_num = update
     neighbors = system.neighborhood[spin_num]
     aligned_spins = neighbors.positive_spins

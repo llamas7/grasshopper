@@ -156,7 +156,7 @@ def rectangular_lattice(
 
     This low-level grid builder works in coordinate units only. When `spacing`
     is omitted, the default spans approximately unit area across all candidate
-    sites. The `System.rectangular_lattice()` constructor may rescale these
+    sites. The `System.regular_lattice("rectangular", ...)` constructor may rescale these
     coordinates so occupied-site area, not candidate-site count, sets the
     physical length scale.
     """
@@ -240,7 +240,7 @@ def triangular_lattice(
     parallelogram with ``width`` sites in each of ``height`` rows.
 
     The direct grid builder returns coordinates in its own spacing units.
-    `System.triangular_lattice()` applies the fixed-density Euclidean
+    `System.regular_lattice("triangular", ...)` applies the fixed-density Euclidean
     normalization based on occupied sites by default.
     """
     width, height = _validate_lattice_size(width, height)
@@ -277,7 +277,7 @@ def hexagonal_lattice(
     populations on both sublattices. Width and height set the site budget,
     not the aspect ratio. Set ``compact=False`` for the original parallelogram.
     `spacing` is the nearest-neighbor
-    distance between honeycomb sites. `System.hexagonal_lattice()` applies the
+    distance between honeycomb sites. `System.regular_lattice("hexagonal", ...)` applies the
     fixed-density Euclidean normalization based on occupied sites by default.
     """
     width, height = _validate_lattice_size(width, height)

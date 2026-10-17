@@ -532,7 +532,7 @@ def build_system(args: argparse.Namespace, eta: float) -> gh.System:
         jump_distance=args.jump_distance,
         kernel=kernel,
         distance_metric="euclidean",
-        silent=not args.verbose,
+        verbose=args.verbose,
     )
     return system
 
@@ -592,7 +592,7 @@ def optimize_system(system: gh.System, args: argparse.Namespace, case: Transitio
     summary["greedy_steps"] = int(greedy_result.steps)
     summary["greedy_converged"] = bool(greedy_result.converged)
 
-    system.array_init(np.asarray(system.best_system, dtype=np.bool_).copy())
+    system.array_init(np.asarray(system.best_spins, dtype=np.bool_).copy())
     return summary
 
 
@@ -798,7 +798,7 @@ def run_case(args: argparse.Namespace, case: TransitionCase) -> dict[str, Any]:
     system = build_system(args, case.eta)
     initialization = initialize_system(system, args, case)
     optimizer = optimize_system(system, args, case)
-    best_state = np.asarray(system.best_system, dtype=np.bool_).copy()
+    best_state = np.asarray(system.best_spins, dtype=np.bool_).copy()
     probability = float(system.probability(best_state, normalization="continuum"))
     graph_probability = float(system.probability(best_state, normalization="graph"))
     diagnostics = morphology_diagnostics(system.grid, best_state, args)

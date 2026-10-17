@@ -1,7 +1,7 @@
 from __future__ import annotations
 from numpy.typing import NDArray
 import numpy as np
-from .core import ConstraintModel, Engine, InteractionModel, SystemConfig, UpdateRule
+from .core import Engine, SystemKind
 from .complementary_energy import (
     generate_energy_grid,
     update_energy_grid,
@@ -12,11 +12,11 @@ from .independent_energy import (
     update_independent_energy_grid,
     calculate_independent_system_energy,
 )
-from .non_antipodal_energy import (
-    generate_non_antipodal_energy_grid,
-    update_non_antipodal_energy_grid,
-    calculate_non_antipodal_system_energy,
-    calculate_non_antipodal_move_delta_energy,
+from .fixed_density_energy import (
+    generate_fixed_density_energy_grid,
+    update_fixed_density_energy_grid,
+    calculate_fixed_density_system_energy,
+    calculate_fixed_density_move_delta_energy,
 )
 from typing import TYPE_CHECKING
 
@@ -68,13 +68,13 @@ def na_suggest(system: System, energy_array: NDArray[np.float64]):
             or occupancy.unoccupied.size == 0
     ):
         raise ValueError(
-            "Non-antipodal moves require at least one occupied and one "
+            "Fixed-density moves require at least one occupied and one "
             "unoccupied site."
         )
     suggested_spin = np.random.randint(len(occupancy.occupied))
     suggested_move = np.random.randint(len(occupancy.unoccupied))
     suggested_update = (suggested_spin, suggested_move)
-    energy_delta = calculate_non_antipodal_move_delta_energy(
+    energy_delta = calculate_fixed_density_move_delta_energy(
         system, suggested_update, energy_array
     )
     return suggested_update, energy_delta
@@ -83,7 +83,7 @@ def na_suggest(system: System, energy_array: NDArray[np.float64]):
 def na_best_update(system: System, energy_array: NDArray[np.float64]):
     occupancy = system.occupancy
     if occupancy is None:
-        raise RuntimeError("Non-antipodal occupancy has not been initialized.")
+        raise RuntimeError("Fixed-density occupancy has not been initialized.")
     if occupancy.occupied.size == 0 or occupancy.unoccupied.size == 0:
         return None, float("-inf")
 
@@ -92,7 +92,7 @@ def na_best_update(system: System, energy_array: NDArray[np.float64]):
     up_idx = int(np.argmin(energy_array[up_site_indices]))
     down_idx = int(np.argmax(energy_array[down_site_indices]))
     suggested_update = (up_idx, down_idx)
-    energy_delta = calculate_non_antipodal_move_delta_energy(
+    energy_delta = calculate_fixed_density_move_delta_energy(
         system,
         suggested_update,
         energy_array,
@@ -118,48 +118,20 @@ INDEPENDENT_ENGINE = Engine(
 )
 OCCUPANCY_ENGINE = Engine(
     mode="occupancy",
-    energy=calculate_non_antipodal_system_energy,
-    grid_gen=generate_non_antipodal_energy_grid,
-    update=update_non_antipodal_energy_grid,
+    energy=calculate_fixed_density_system_energy,
+    grid_gen=generate_fixed_density_energy_grid,
+    update=update_fixed_density_energy_grid,
     suggest=na_suggest,
     best_update=na_best_update,
 )
 
-NONANTIPODAL_ENGINE = Engine(
-    mode="non-antipodal",
-    energy=OCCUPANCY_ENGINE.energy,
-    grid_gen=OCCUPANCY_ENGINE.grid_gen,
-    update=OCCUPANCY_ENGINE.update,
-    suggest=OCCUPANCY_ENGINE.suggest,
-    best_update=OCCUPANCY_ENGINE.best_update,
-)
-
-ENGINE_BY_CONFIG_KEY = {
-    (
-        ConstraintModel.ANTIPODAL,
-        InteractionModel.COMPLEMENTARY,
-        UpdateRule.FLIP,
-    ): COMPLEMENTARY_ENGINE,
-    (
-        ConstraintModel.INDEPENDENT,
-        InteractionModel.INDEPENDENT,
-        UpdateRule.FLIP,
-    ): INDEPENDENT_ENGINE,
-    (
-        ConstraintModel.FIXED_DENSITY,
-        InteractionModel.OCCUPANCY,
-        UpdateRule.SWAP,
-    ): OCCUPANCY_ENGINE,
+ENGINE_BY_KIND = {
+    SystemKind.COMPLEMENTARY: COMPLEMENTARY_ENGINE,
+    SystemKind.INDEPENDENT: INDEPENDENT_ENGINE,
+    SystemKind.FIXED_DENSITY: OCCUPANCY_ENGINE,
+    SystemKind.EUCLIDEAN: OCCUPANCY_ENGINE,
 }
 
 
-def get_engine(config: SystemConfig) -> Engine:
-    key = (
-        config.constraint,
-        config.interaction_model,
-        config.update_rule,
-    )
-    try:
-        return ENGINE_BY_CONFIG_KEY[key]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported engine config: {config!r}.") from exc
+def get_engine(kind: SystemKind) -> Engine:
+    return ENGINE_BY_KIND[SystemKind(kind)]

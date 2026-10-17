@@ -5,7 +5,7 @@ import scipy as sci
 from tqdm import tqdm
 from collections.abc import Callable, Sequence
 
-from .core import KernelSpec, Neighborhood, NonAntipodalNeighborhood
+from .core import KernelSpec, Neighborhood, FixedDensityNeighborhood
 from .kernels import calculate_contributions, resolve_kernel
 from .metrics import DistanceMetric, resolve_distance_metric, validate_distances
 
@@ -116,7 +116,7 @@ def build_neighborhood(
             grid_points, jump_distance, kernel, silent, distance_metric, jump_weights
         )
         if antipodal
-        else build_nonantipodal_neighborhood(
+        else build_fixed_density_neighborhood(
             grid_points, jump_distance, kernel, silent, distance_metric, jump_weights
         )
     )
@@ -295,7 +295,7 @@ def build_antipodal_neighborhood(
     return neighborhood
 
 
-def build_nonantipodal_neighborhood(
+def build_fixed_density_neighborhood(
     grid_points: np.ndarray,
     jump_distance: float | Sequence[float],
     kernel: KernelSpec | str | Callable = "cosine",
@@ -339,7 +339,7 @@ def build_nonantipodal_neighborhood(
             discrete_function,
         )
         neighborhood.append(
-            NonAntipodalNeighborhood(
+            FixedDensityNeighborhood(
                 neighbor_spins=pruned_spins[contributing_mask],
                 contributions=contributions,
                 total_weight=total_weight,

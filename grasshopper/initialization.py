@@ -3,7 +3,7 @@ from .engines import get_engine
 import numpy as np
 from numpy.typing import NDArray
 from typing import TYPE_CHECKING
-from .core import ConstraintModel, Geometry
+from .core import SystemKind
 from .cogs import cogwheel_interpd
 from .plot_system import convert_ss
 from .rng import Seed, restore_numpy_state, seed_numpy
@@ -14,19 +14,19 @@ if TYPE_CHECKING:
 
 
 def sync_occupancy(system: System):
-    if system.current_system is None:
+    if system.current_spins is None:
         raise RuntimeError("Cannot build occupancy lists before initialization.")
-    system.sync_occupancy_from_spins()
+    system._sync_occupancy_from_spins()
 
 
 def init_system(system: System):
-    engine = get_engine(system.config)
+    engine = get_engine(system.kind)
     calculate_energy = engine.energy
-    system.current_energy = calculate_energy(system.current_system, system.neighborhood)
-    system.best_energy = calculate_energy(system.best_system, system.neighborhood)
+    system.current_energy = calculate_energy(system.current_spins, system.neighborhood)
+    system.best_energy = calculate_energy(system.best_spins, system.neighborhood)
 
     if system.current_energy > system.best_energy:
-        system.best_system = system.current_system.copy()
+        system.best_spins = system.current_spins.copy()
         system.best_energy = system.current_energy
     if not system.antipodal:
         sync_occupancy(system)
@@ -35,25 +35,25 @@ def init_system(system: System):
 def init_random(system: System, seed: Seed = None):
     rng_state = seed_numpy(seed)
     try:
-        if system.constraint == ConstraintModel.FIXED_DENSITY:
+        if system.kind.fixed_density:
             all_spins = np.arange(len(system.grid))
             idx = np.random.choice(len(all_spins), size=system.num_spins, replace=False)
             occupied_sites = all_spins[idx].tolist()
-            system.current_system = np.zeros(len(system.grid), dtype=bool)
-            system.current_system[occupied_sites] = True
+            system.current_spins = np.zeros(len(system.grid), dtype=bool)
+            system.current_spins[occupied_sites] = True
         else:
-            system.current_system = np.random.randint(
+            system.current_spins = np.random.randint(
                 2, size=system.system_shape, dtype="bool"
             )
     finally:
         restore_numpy_state(rng_state)
 
-    system.best_system = system.current_system.copy()
+    system.best_spins = system.current_spins.copy()
     init_system(system)
 
 
 def init_random_hemisphere(system: System, seed: Seed = None):
-    if system.geometry == Geometry.EUCLIDEAN:
+    if system.kind is SystemKind.EUCLIDEAN:
         raise ValueError("hemisphere_init() requires a spherical grid.")
     rng_state = seed_numpy(seed)
     try:
@@ -64,11 +64,11 @@ def init_random_hemisphere(system: System, seed: Seed = None):
     finally:
         restore_numpy_state(rng_state)
     norm_vector = norm_vector / np.linalg.norm(norm_vector)
-    current_system = (system.grid[: len(system.neighborhood)] @ norm_vector) > 0
-    if system.constraint == ConstraintModel.INDEPENDENT:
-        current_system = np.column_stack((current_system, ~current_system))
-    system.current_system = current_system.copy()
-    system.best_system = current_system.copy()
+    current_spins = (system.grid[: len(system.neighborhood)] @ norm_vector) > 0
+    if system.kind is SystemKind.INDEPENDENT:
+        current_spins = np.column_stack((current_spins, ~current_spins))
+    system.current_spins = current_spins.copy()
+    system.best_spins = current_spins.copy()
     init_system(system)
 
 
@@ -80,7 +80,7 @@ def init_from_array(system: System, spin_array: NDArray[np.bool_]) -> None:
         raise TypeError(f"spin_array must be boolean, got {spin_array.dtype!r}")
 
     # expected shape per system type
-    if system.constraint == ConstraintModel.ANTIPODAL:
+    if system.kind is SystemKind.COMPLEMENTARY:
         if n_sites % 2 != 0:
             raise ValueError("Antipodal systems require an even number of sites.")
         expected_len = n_sites // 2
@@ -88,7 +88,7 @@ def init_from_array(system: System, spin_array: NDArray[np.bool_]) -> None:
             raise ValueError("Antipodal system expects antipodal=True, but got False.")
         allowed_shapes = [(expected_len,), (expected_len, 1)]
 
-    elif system.constraint == ConstraintModel.FIXED_DENSITY:
+    elif system.kind.fixed_density:
         expected_len = n_sites
         if system.antipodal:
             raise ValueError(
@@ -96,22 +96,19 @@ def init_from_array(system: System, spin_array: NDArray[np.bool_]) -> None:
             )
         allowed_shapes = [(expected_len,), (expected_len, 1)]
 
-    elif system.constraint == ConstraintModel.INDEPENDENT:
+    elif system.kind is SystemKind.INDEPENDENT:
         if n_sites % 2 != 0:
             raise ValueError("Independent antipodal systems require an even number of sites.")
         expected_len = n_sites // 2
         allowed_shapes = [(expected_len, 2)]
 
     else:
-        raise ValueError(f"Unknown system config: {system.config!r}")
+        raise ValueError(f"Unknown system kind: {system.kind!r}")
 
     shape = spin_array.shape
 
     # Strict shape check + targeted normalization
-    if system.constraint in (
-        ConstraintModel.ANTIPODAL,
-        ConstraintModel.FIXED_DENSITY,
-    ):
+    if system.kind is not SystemKind.INDEPENDENT:
         if shape == (expected_len,):
             normalized = spin_array
         elif shape == (expected_len, 1):
@@ -119,7 +116,7 @@ def init_from_array(system: System, spin_array: NDArray[np.bool_]) -> None:
         else:
             raise ValueError(
                 f"Input array shape {shape} does not match allowed shapes "
-                f"{allowed_shapes} for config {system.config!r}."
+                f"{allowed_shapes} for kind {system.kind!r}."
             )
 
     else:  # INDEPENDENT
@@ -128,10 +125,10 @@ def init_from_array(system: System, spin_array: NDArray[np.bool_]) -> None:
         else:
             raise ValueError(
                 f"Input array shape {shape} does not match allowed shape "
-                f"{allowed_shapes} for config {system.config!r}."
+                f"{allowed_shapes} for kind {system.kind!r}."
             )
 
-    if system.geometry == Geometry.EUCLIDEAN:
+    if system.kind is SystemKind.EUCLIDEAN:
         occupied = int(np.count_nonzero(normalized))
         if occupied != system.num_spins:
             raise ValueError(
@@ -140,8 +137,8 @@ def init_from_array(system: System, spin_array: NDArray[np.bool_]) -> None:
             )
 
     # Store exactly once; ensure no aliasing and contiguous memory
-    system.current_system = np.ascontiguousarray(normalized, dtype=np.bool_).copy()
-    system.best_system = system.current_system.copy()
+    system.current_spins = np.ascontiguousarray(normalized, dtype=np.bool_).copy()
+    system.best_spins = system.current_spins.copy()
     init_system(system)
 
 
@@ -150,7 +147,7 @@ def init_triangle_cogwheel(
         num_cogs: int,
         cog_height: float,
 ) -> None:
-    if system.geometry == Geometry.EUCLIDEAN:
+    if system.kind is SystemKind.EUCLIDEAN:
         raise ValueError("Cogwheel initializers require a spherical grid.")
     if system.antipodal and num_cogs % 2 == 0:
         raise ValueError("Antipodal cogwheels require an odd number of cogs.")
@@ -163,12 +160,12 @@ def init_triangle_cogwheel(
         system_size = len(grid_ss)
     spin_array = (grid_ss[:, 1] > interped(grid_ss[:, 0]))[:system_size]
 
-    if system.constraint == ConstraintModel.INDEPENDENT:
+    if system.kind is SystemKind.INDEPENDENT:
         shifted_x = (grid_ss[:, 0] + np.pi / num_cogs + np.pi) % (2 * np.pi) - np.pi
         second_array = (grid_ss[:, 1] < interped(shifted_x))[: len(grid_ss) // 2]
         spin_array = np.column_stack((spin_array, second_array))
-    system.current_system = spin_array.copy()
-    system.best_system = spin_array.copy()
+    system.current_spins = spin_array.copy()
+    system.best_spins = spin_array.copy()
     init_system(system)
 
 
@@ -177,7 +174,7 @@ def init_cosine_cogwheel(
         num_cogs: int,
         cog_height: float,
 ) -> None:
-    if system.geometry == Geometry.EUCLIDEAN:
+    if system.kind is SystemKind.EUCLIDEAN:
         raise ValueError("Cogwheel initializers require a spherical grid.")
     if system.antipodal and num_cogs % 2 == 0:
         raise ValueError("Antipodal cogwheels require an odd number of cogs.")
@@ -193,11 +190,11 @@ def init_cosine_cogwheel(
         system_size = len(grid_ss)
 
     spin_array = (grid_ss[:, 1] > cogwheel(grid_ss[:, 0]) + np.pi / 2)[:system_size]
-    if system.constraint == ConstraintModel.INDEPENDENT:
+    if system.kind is SystemKind.INDEPENDENT:
         second_system = (
                                 grid_ss[:, 1] < cogwheel(grid_ss[:, 0] + (np.pi / num_cogs)) + np.pi / 2
                         )[: len(grid_ss) // 2]
         spin_array = np.column_stack((spin_array, second_system))
-    system.current_system = spin_array.copy()
-    system.best_system = spin_array.copy()
+    system.current_spins = spin_array.copy()
+    system.best_spins = spin_array.copy()
     init_system(system)
